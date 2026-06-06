@@ -9,6 +9,7 @@ import isaacgym
 from isaacgym import gymapi
 import cv2
 import torch
+import numpy as np
 
 from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry
@@ -19,6 +20,8 @@ FPS = 30
 CAM_RES = (1000, 1000)
 VIEW_OFFSET = (4.0, -4.0, 3.0)
 MAX_FRAMES = 30000
+MINIMAP_SIZE = 260
+MINIMAP_PAD = 24
 DYNAMIC_TASKS = {
     "go2_pos_sparse_static",
     "go2_pos_dynamic_1",
@@ -58,6 +61,14 @@ def _apply_record_overrides(env_cfg, args):
         env_cfg.terrain.num_cols = 1
         env_cfg.terrain.curriculum = False
         env_cfg.terrain.max_init_terrain_level = 0
+        if hasattr(env_cfg, "sparse_room"):
+            env_cfg.sparse_room.start_y_range = [4.2, 5.8]
+            env_cfg.sparse_room.goal_y_range = [4.2, 5.8]
+        if hasattr(env_cfg, "dynamic_obstacles"):
+            env_cfg.dynamic_obstacles.y_min = 3.0
+            env_cfg.dynamic_obstacles.y_max = 7.0
+            env_cfg.dynamic_obstacles.force_interaction = True
+            env_cfg.dynamic_obstacles.force_interaction_jitter = 0.45
 
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
@@ -70,6 +81,90 @@ def _apply_record_overrides(env_cfg, args):
     if hasattr(env_cfg.env, "stay_time"):
         env_cfg.env.stay_time = 500
     env_cfg.asset.terminate_after_contacts_on = []
+
+
+def _draw_label(frame, text, origin, color, scale=0.55, thickness=1):
+    cv2.putText(frame, text, origin, cv2.FONT_HERSHEY_SIMPLEX, scale, color, thickness, cv2.LINE_AA)
+
+
+def _world_to_minimap(point_xy, room_origin_xy, room_size, canvas_origin, canvas_size):
+    local = point_xy - room_origin_xy
+    local = np.clip(local, 0.0, room_size)
+    px = int(round(canvas_origin[0] + (local[0] / room_size) * canvas_size))
+    py = int(round(canvas_origin[1] + canvas_size - (local[1] / room_size) * canvas_size))
+    return px, py
+
+
+def _draw_minimap_overlay(frame, env, episode_idx, frame_idx, latest_episode_info):
+    if not hasattr(env, "room_origins"):
+        return frame
+
+    overlay = frame.copy()
+    x0 = frame.shape[1] - MINIMAP_SIZE - MINIMAP_PAD
+    y0 = MINIMAP_PAD
+    x1 = frame.shape[1] - MINIMAP_PAD
+    y1 = MINIMAP_PAD + MINIMAP_SIZE
+    cv2.rectangle(overlay, (x0 - 12, y0 - 12), (x1 + 12, y1 + 86), (18, 18, 18), -1)
+    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+    room_size = float(env.terrain.env_length)
+    cv2.rectangle(frame, (x0, y0), (x1, y1), (215, 215, 215), 2)
+
+    room_origin = env.room_origins[0].detach().cpu().numpy()
+    robot_xy = env.root_states[0, :2].detach().cpu().numpy()
+    start_xy = env.env_origins[0, :2].detach().cpu().numpy()
+    goal_xy = env.position_targets[0, :2].detach().cpu().numpy()
+
+    # Draw static pillars for sparse-room tasks.
+    sparse_cfg = getattr(env.cfg, "sparse_room", None)
+    if sparse_cfg is not None:
+        half_x = sparse_cfg.pillar_size[0] * 0.5
+        half_y = sparse_cfg.pillar_size[1] * 0.5
+        for center_x, center_y in sparse_cfg.pillar_centers:
+            p0 = _world_to_minimap(np.array([room_origin[0] + center_x - half_x, room_origin[1] + center_y - half_y]), room_origin, room_size, (x0, y0), MINIMAP_SIZE)
+            p1 = _world_to_minimap(np.array([room_origin[0] + center_x + half_x, room_origin[1] + center_y + half_y]), room_origin, room_size, (x0, y0), MINIMAP_SIZE)
+            cv2.rectangle(frame, (min(p0[0], p1[0]), min(p0[1], p1[1])), (max(p0[0], p1[0]), max(p0[1], p1[1])), (105, 105, 105), -1)
+
+    if hasattr(env, "dynamic_root_states") and env.dynamic_root_states.shape[1] > 0:
+        for obs_xy in env.dynamic_root_states[0, :, :2].detach().cpu().numpy():
+            px, py = _world_to_minimap(obs_xy, room_origin, room_size, (x0, y0), MINIMAP_SIZE)
+            cv2.circle(frame, (px, py), 8, (0, 140, 255), -1)
+            cv2.circle(frame, (px, py), 10, (255, 255, 255), 1)
+
+    start_px = _world_to_minimap(start_xy, room_origin, room_size, (x0, y0), MINIMAP_SIZE)
+    goal_px = _world_to_minimap(goal_xy, room_origin, room_size, (x0, y0), MINIMAP_SIZE)
+    robot_px = _world_to_minimap(robot_xy, room_origin, room_size, (x0, y0), MINIMAP_SIZE)
+    cv2.circle(frame, start_px, 7, (0, 255, 255), -1)
+    cv2.circle(frame, goal_px, 8, (255, 80, 80), -1)
+    cv2.circle(frame, robot_px, 7, (80, 255, 80), -1)
+    cv2.line(frame, start_px, goal_px, (160, 160, 160), 1, cv2.LINE_AA)
+
+    dist_to_goal = float(torch.norm(env.position_targets[0, :2] - env.root_states[0, :2]).item())
+    _draw_label(frame, f"Episode: {episode_idx + 1}/{TOTAL_EPISODES}", (x0 - 4, y1 + 24), (255, 255, 255))
+    _draw_label(frame, f"Frame: {frame_idx}", (x0 - 4, y1 + 46), (255, 255, 255))
+    _draw_label(frame, f"Dist->Goal: {dist_to_goal:.2f}m", (x0 - 4, y1 + 68), (255, 255, 255))
+
+    if latest_episode_info is not None:
+        success = float(latest_episode_info.get("success", 0.0))
+        dyn_col = float(latest_episode_info.get("dynamic_collision_count", 0.0))
+        total_col = float(latest_episode_info.get("total_collision_count", dyn_col))
+        status = "SUCCESS" if success > 0.5 else "RUNNING"
+        status_color = (80, 220, 80) if success > 0.5 else (230, 230, 230)
+        _draw_label(frame, f"Status: {status}", (MINIMAP_PAD, 40), status_color, scale=0.8, thickness=2)
+        _draw_label(frame, f"Dyn collisions: {dyn_col:.0f}", (MINIMAP_PAD, 72), (255, 255, 255))
+        _draw_label(frame, f"Total collisions: {total_col:.0f}", (MINIMAP_PAD, 96), (255, 255, 255))
+
+    legend_y = y0 + 18
+    cv2.circle(frame, (x0 + 12, legend_y), 5, (80, 255, 80), -1)
+    _draw_label(frame, "Robot", (x0 + 24, legend_y + 5), (255, 255, 255), scale=0.45)
+    cv2.circle(frame, (x0 + 12, legend_y + 20), 5, (255, 80, 80), -1)
+    _draw_label(frame, "Goal", (x0 + 24, legend_y + 25), (255, 255, 255), scale=0.45)
+    cv2.circle(frame, (x0 + 12, legend_y + 40), 5, (0, 255, 255), -1)
+    _draw_label(frame, "Start", (x0 + 24, legend_y + 45), (255, 255, 255), scale=0.45)
+    cv2.circle(frame, (x0 + 12, legend_y + 60), 5, (0, 140, 255), -1)
+    _draw_label(frame, "Dynamic obs", (x0 + 24, legend_y + 65), (255, 255, 255), scale=0.45)
+
+    return frame
 
 
 def _maybe_set_resume_fallback(train_cfg, args):
@@ -118,6 +213,7 @@ def play(args):
     obs, _ = env.reset()
     episode_count = 0
     frame_count = 0
+    latest_episode_info = None
 
     with torch.no_grad():
         for _ in range(100 * int(env.max_episode_length)):
@@ -134,6 +230,7 @@ def play(args):
                 img = env.gym.get_camera_image(env.sim, env.envs[0], cam_handle, gymapi.IMAGE_COLOR)
                 img = img.reshape((CAM_RES[1], CAM_RES[0], 4))[:, :, :3]
                 img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                img_bgr = _draw_minimap_overlay(img_bgr, env, episode_count, frame_count, latest_episode_info)
                 video.write(img_bgr)
                 frame_count += 1
                 if frame_count % 100 == 0:
@@ -145,6 +242,7 @@ def play(args):
             if dones.any():
                 episode_count += 1
                 episode_info = infos.get("episode", {})
+                latest_episode_info = episode_info
                 success = float(episode_info.get("success", 0.0))
                 dyn_col = float(episode_info.get("dynamic_collision_count", 0.0))
                 print(f"=== Episode {episode_count}/{TOTAL_EPISODES} finished | success={success:.2f} dynamic_collision_count={dyn_col:.2f} ===")

@@ -287,6 +287,8 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
         y_min = 1.2
         y_max = 8.8
         speed_range = [0.15, 0.40]
+        force_interaction = False
+        force_interaction_jitter = 0.45
 
     class rewards(Go2PosRoughCfg.rewards):
         class scales(Go2PosRoughCfg.rewards.scales):

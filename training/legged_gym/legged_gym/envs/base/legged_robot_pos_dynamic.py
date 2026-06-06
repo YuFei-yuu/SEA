@@ -373,6 +373,19 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         dirs = torch.where(torch.rand(len(env_ids), self.dynamic_obs_count, device=self.device) > 0.5, 1.0, -1.0)
         speeds = torch_rand_float(cfg.speed_range[0], cfg.speed_range[1], (len(env_ids), self.dynamic_obs_count), device=self.device)
 
+        # Recording/demo mode can bias the first obstacle toward the robot's crossing band
+        # without exposing future motion to the policy.
+        if getattr(cfg, "force_interaction", False):
+            jitter = float(getattr(cfg, "force_interaction_jitter", 0.45))
+            goal_mid_y = 0.5 * (
+                (self.env_origins[env_ids, 1] - self.room_origins[env_ids, 1])
+                + (self.position_targets[env_ids, 1] - self.room_origins[env_ids, 1])
+            )
+            y_local[:, 0] = (goal_mid_y + torch_rand_float(-jitter, jitter, (len(env_ids), 1), device=self.device).squeeze(1)).clamp(
+                min=cfg.y_min,
+                max=cfg.y_max,
+            )
+
         self.dynamic_local_pos[env_ids, :, 0] = lane_x
         self.dynamic_local_pos[env_ids, :, 1] = y_local
         self.dynamic_dirs[env_ids] = dirs
