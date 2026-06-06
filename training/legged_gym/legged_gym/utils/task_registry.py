@@ -156,6 +156,9 @@ class TaskRegistry():
         runner = runner_class(env, train_cfg_dict, log_dir, args=args, device=args.rl_device)
         resume = train_cfg.runner.resume
         if resume:
+            resume_experiment = train_cfg.runner.resume_experiment_name
+            if resume_experiment is not None:
+                log_root = os.path.join(LEGGED_GYM_ROOT_DIR, 'logs', resume_experiment)
             # load previously trained model
             resume_path = get_load_path(log_root, load_run=train_cfg.runner.load_run, checkpoint=train_cfg.runner.checkpoint)
             self.loaded_policy_path = resume_path

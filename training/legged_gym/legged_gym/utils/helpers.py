@@ -142,6 +142,8 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             cfg_train.runner.resume = args.resume
         if args.experiment_name is not None:
             cfg_train.runner.experiment_name = args.experiment_name
+        if args.resume_experiment_name is not None:
+            cfg_train.runner.resume_experiment_name = args.resume_experiment_name
         if args.run_name is not None:
             cfg_train.runner.run_name = args.run_name
         if args.load_run is not None:
@@ -154,6 +156,7 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
 def get_args():
     custom_parameters = [
         {"name": "--task", "type": str, "default": "go2_pos_rough", "help": "Resume training or start testing from a checkpoint. Overrides config file if provided."},
+        {"name": "--resume_experiment_name", "type": str,  "help": "Experiment name to load from when resume=True. Defaults to the current task experiment."},
         {"name": "--resume", "action": "store_true", "default": False,  "help": "Resume training from a checkpoint"},
         {"name": "--experiment_name", "type": str,  "help": "Name of the experiment to run or load. Overrides config file if provided."},
         {"name": "--run_name", "type": str,  "help": "Name of the run. Overrides config file if provided."},

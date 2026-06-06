@@ -347,4 +347,29 @@ class Terrain:
     def hard_room_terrain_func(self, terrain, difficulty):
         hard_room = create_rand_room(9, grid_size=20, target_size=self.length_per_env_pixels, min_distance=2, set_pos=False) # 100*100, obstacle height 0.2m ~ 1.0m
         terrain.height_field_raw = hard_room * int(1. / terrain.vertical_scale) # terrain.vertical_scale = 0.005, so height_field_raw = hard_room * 200 
+
+    def dynamic_room_sparse_terrain_func(self, terrain, difficulty):
+        terrain.height_field_raw[:] = 0
+
+        wall_height = int(1.0 / terrain.vertical_scale)
+        pillar_height = int(0.6 / terrain.vertical_scale)
+        wall_thickness = max(3, int(0.4 / terrain.horizontal_scale))
+
+        terrain.height_field_raw[:wall_thickness, :] = wall_height
+        terrain.height_field_raw[-wall_thickness:, :] = wall_height
+        terrain.height_field_raw[:, :wall_thickness] = wall_height
+        terrain.height_field_raw[:, -wall_thickness:] = wall_height
+
+        pillar_centers = ((3.6, 2.6), (6.4, 5.0), (3.6, 7.4))
+        pillar_size = 0.8
+        half_extent = max(1, int(round((pillar_size * 0.5) / terrain.horizontal_scale)))
+
+        for center_x, center_y in pillar_centers:
+            cx = int(round(center_x / terrain.horizontal_scale))
+            cy = int(round(center_y / terrain.horizontal_scale))
+            x0 = max(wall_thickness, cx - half_extent)
+            x1 = min(terrain.length - wall_thickness, cx + half_extent)
+            y0 = max(wall_thickness, cy - half_extent)
+            y1 = min(terrain.width - wall_thickness, cy + half_extent)
+            terrain.height_field_raw[x0:x1, y0:y1] = pillar_height
     

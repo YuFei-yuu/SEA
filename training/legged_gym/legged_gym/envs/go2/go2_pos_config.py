@@ -1,30 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2021 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: BSD-3-Clause
-# 
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions are met:
-#
-# 1. Redistributions of source code must retain the above copyright notice, this
-# list of conditions and the following disclaimer.
-#
-# 2. Redistributions in binary form must reproduce the above copyright notice,
-# this list of conditions and the following disclaimer in the documentation
-# and/or other materials provided with the distribution.
-#
-# 3. Neither the name of the copyright holder nor the names of its
-# contributors may be used to endorse or promote products derived from
-# this software without specific prior written permission.
-#
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
-# AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-# DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
-# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
-# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
-# SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-# CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
-# OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
@@ -33,7 +8,7 @@ from legged_gym.envs.base.legged_robot_pos_config import LeggedRobotPosCfg
 import numpy as np
 
 
-class Go2PosRoughCfg( LeggedRobotPosCfg ):
+class Go2PosRoughCfg(LeggedRobotPosCfg):
     class loco:
         num_obs_buf = 45
         his_len = 10
@@ -51,19 +26,17 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
         num_nav_actions = 3
         num_props = 12
         num_rays = 41
-        num_goal_obs = 2 # target x,y
+        num_goal_obs = 2
         num_obs_one_step = num_props + num_rays + num_goal_obs
-        num_observations = num_obs_one_step * his_len 
+        num_observations = num_obs_one_step * his_len
         num_envs = 2048
-        episode_length_s = 60 # episode length in seconds
+        episode_length_s = 60
         debug_viz = True
 
     class replay:
         enable_collision_replay = True
         replay_prob = 0.8
-        # Prob to trigger reset on non-fatal collision: [min, max]
-        # Increases linearly based on goal_level
-        early_reset_prob_range = [0.1, 0.5] 
+        early_reset_prob_range = [0.1, 0.5]
         undo_steps_range = [100, 150]
         max_collision_points = 10
 
@@ -72,23 +45,15 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
         draw_rays = True
         draw_collision_points = True
         draw_position_target = True
-
-        # Configuration for ray visualization groups
-        # format: {name: [fov_deg, style_key]}
-        # If fov_deg is None, draws all rays. Use 'guide' to draw the calculated guidance ray.
+        draw_dynamic_obstacles = True
         ray_groups = {
-            # "all": [None, "ray_pink"],
             "guidance_navigation": ["guide", "guide_ray_marker"],
         }
-
-        # Configuration for point visualization Styles
-        # format: {name: [radius, resolution, color(r,g,b)]}
-        # Decoupled from color names to allow different sizes for same colors
         points = {
-            "ray_pink":   [0.015, 4, (1.0, 0.2, 1.0)],
+            "ray_pink": [0.015, 4, (1.0, 0.2, 1.0)],
             "ray_yellow": [0.015, 4, (1.0, 1.0, 0.0)],
-            "ray_red":    [0.015, 4, (1.0, 0.0, 0.0)],
-            "ray_green":  [0.015, 4, (0.0, 1.0, 0.0)],
+            "ray_red": [0.015, 4, (1.0, 0.0, 0.0)],
+            "ray_green": [0.015, 4, (0.0, 1.0, 0.0)],
             "goal_marker": [0.2, 8, (0.0, 0.0, 1.0)],
             "collision_marker": [0.10, 4, (1.0, 0.0, 0.0)],
             "scan_dot_obs": [0.05, 4, (1.0, 0.0, 0.0)],
@@ -96,63 +61,56 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
             "guide_ray_marker": [0.06, 6, (0.0, 1.0, 1.0)],
         }
 
-    class init_state( LeggedRobotPosCfg.init_state ):
+    class init_state(LeggedRobotPosCfg.init_state):
         pos = [0.0, 0.0, 0.42]
-        default_joint_angles = { # = target angles [rad] when action = 0.0
-            'FL_hip_joint': 0.1,   # [rad]
-            'RL_hip_joint': 0.1,   # [rad]
-            'FR_hip_joint': -0.1 ,  # [rad]
-            'RR_hip_joint': -0.1,   # [rad]
-
-            'FL_thigh_joint': 0.8,     # [rad]
-            'RL_thigh_joint': 1.,   # [rad]
-            'FR_thigh_joint': 0.8,     # [rad]
-            'RR_thigh_joint': 1.,   # [rad]
-
-            'FL_calf_joint': -1.5,   # [rad]
-            'RL_calf_joint': -1.5,    # [rad]
-            'FR_calf_joint': -1.5,  # [rad]
-            'RR_calf_joint': -1.5,    # [rad]
+        default_joint_angles = {
+            'FL_hip_joint': 0.1,
+            'RL_hip_joint': 0.1,
+            'FR_hip_joint': -0.1,
+            'RR_hip_joint': -0.1,
+            'FL_thigh_joint': 0.8,
+            'RL_thigh_joint': 1.0,
+            'FR_thigh_joint': 0.8,
+            'RR_thigh_joint': 1.0,
+            'FL_calf_joint': -1.5,
+            'RL_calf_joint': -1.5,
+            'FR_calf_joint': -1.5,
+            'RR_calf_joint': -1.5,
         }
-        
 
     class commands(LeggedRobotPosCfg.commands):
         curriculum = False
         max_curriculum = 1.
         num_commands = 3
-        delay_time = 0.1 # [s] time delay for the command
-        alpha = 0.5 # Filter coefficient: alpha*new + (1-alpha)*old
+        delay_time = 0.1
+        alpha = 0.5
         class ranges(LeggedRobotPosCfg.commands.ranges):
             limit_vx = [-0.5, 2.0]
             limit_vy = [-1.0, 1.0]
             limit_vyaw = [-1.0, 1.0]
 
-    class control( LeggedRobotPosCfg.control ):
-        # PD Drive parameters:
+    class control(LeggedRobotPosCfg.control):
         control_type = 'P'
-        stiffness = {'joint': 30.}  # [N*m/rad]
-        damping = {'joint': 0.75}     # [N*m*s/rad
-            
+        stiffness = {'joint': 30.}
+        damping = {'joint': 0.75}
         action_scale = 0.25
-        # decimation: Number of control action updates @ sim DT per policy DT
         decimation = 4
 
-    class asset( LeggedRobotPosCfg.asset ):
+    class asset(LeggedRobotPosCfg.asset):
         file = '{LEGGED_GYM_ROOT_DIR}/resources/go2_description/urdf/go2_description_v8.urdf'
         flip_visual_attachments = True
         fix_base_link = False
         name = "Go2"
         foot_name = "foot"
-        penalize_contacts_on = ["thigh", "calf", "Head_upper", "Head_lower", "base"] # collision reward
-        terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"] # termination rewrad
-        # terminate_after_contacts_on = [] # no termination
-        self_collisions = 1 # 1 to disable, 0 to enable...bitwise filter
+        penalize_contacts_on = ["thigh", "calf", "Head_upper", "Head_lower", "base"]
+        terminate_after_contacts_on = ["base", "Head_upper", "Head_lower"]
+        self_collisions = 1
 
-    class terrain( LeggedRobotPosCfg.terrain ):
-        terrain_types = ['hard_room'] # easy_room, middle_room, hard_room
+    class terrain(LeggedRobotPosCfg.terrain):
+        terrain_types = ['hard_room']
         terrain_proportions = [1.0]
-        num_rows = 10 # number of terrain rows (levels)
-        num_cols = 10 # number of terrain cols (types)
+        num_rows = 10
+        num_cols = 10
         measure_heights = True
 
     class domain_rand:
@@ -162,8 +120,7 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
         added_mass_range = [-1.5, 1.5]
         push_robots = True
         push_interval_s = 2.5
-        max_push_vel_xy = 0.0  # not used
-        
+        max_push_vel_xy = 0.0
         randomize_yaw = True
         randomize_roll = False
         randomize_pitch = False
@@ -174,10 +131,10 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
         init_x_range = [-0.5, 0.5]
         init_y_range = [-0.5, 0.5]
         randomize_velo = False
-        init_vlinx_range = [-0.5,0.5]
-        init_vliny_range = [-0.5,0.5]
-        init_vlinz_range = [-0.5,0.5]
-        init_vang_range = [-0.5,0.5]
+        init_vlinx_range = [-0.5, 0.5]
+        init_vliny_range = [-0.5, 0.5]
+        init_vlinz_range = [-0.5, 0.5]
+        init_vang_range = [-0.5, 0.5]
 
     class sensors:
         class ray2d:
@@ -185,9 +142,9 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
             log2 = True
             min_dist = 0.1
             max_dist = 3.0
-            theta_start = -2*np.pi/3
-            theta_end = 2*np.pi/3 + 0.0001
-            theta_step = np.pi/30
+            theta_start = -2 * np.pi / 3
+            theta_end = 2 * np.pi / 3 + 0.0001
+            theta_step = np.pi / 30
 
     class normalization:
         class obs_scales:
@@ -209,10 +166,10 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
             lin_vel = 0.1
             ang_vel = 0.1
             gravity = 0.05
-            height_measurements = 0.1    
+            height_measurements = 0.1
 
-    class rewards():
-        class scales():
+    class rewards:
+        class scales:
             termination = -100.0
             collision = -4.0
             close_obst_vel = 5.0
@@ -223,53 +180,47 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
             proximity = 0.0
 
         class proximity_config:
-            # Ray distance penalty
             slope = 15.0
             min_dist = 0.1
-            
-            # Speed penalty in narrow space
             narrow_slope = 10.0
             speed_limit_scale = 1.0
             speed_limit_min = 0.1
             speed_limit_max = 1.0
-            
-            # Rear obstacle detection (height map)
-            rear_x_range = [-0.4, -0.1] # Rear ROI in meters relative to center
-            rear_y_range = [-0.3, 0.3]  # Width ROI in meters relative to center
-            obstacle_height_th = 0.15   # Height difference to consider an obstacle
+            rear_x_range = [-0.4, -0.1]
+            rear_y_range = [-0.3, 0.3]
+            obstacle_height_th = 0.15
             rear_penalty_weight = 1.0
             speed_penalty_weight = 2.0
 
         class velo_dir_config:
             target_speed_max = 0.5
             target_speed_scale = 1.0
-            orbit_penalty_weight = 1.0 # Scale for y_vel^2 + yaw_vel^2
-            reach_bonus_weight = 1.0   # Scale for 1/(1+2*d^2)
+            orbit_penalty_weight = 1.0
+            reach_bonus_weight = 1.0
 
         class reach_pos_target_tight_config:
             distance_threshold = 0.5
-            reach_bonus_weight = 1.0 # Scale for 1/(1+2*d^2)
+            reach_bonus_weight = 1.0
 
         class close_obst_vel_config:
             max_rays_clip = 2.0
-            kernel_size = 5 # smoothing window
+            kernel_size = 5
             fov_deg = 150.0
             safe_vel_scale = 1.0
             safe_vel_max = 0.5
-            reach_bonus_weight = 1.0   # Scale for 1/(1+2*d^2)
-            overspeed_penalty_weight = 0.2 # Penalty for exceeding safe velocity
+            reach_bonus_weight = 1.0
+            overspeed_penalty_weight = 0.2
 
         class stuck_config:
-            fov_deg = 120.0            # Total FOV in degrees
-            move_dist_threshold = 0.1  # Distance moved in hist to be "not stuck"
-            dead_end_threshold = 1.0   # Max space in front to be "dead end"
-            backward_vel_threshold = 0.0 # v_x > 0 means not moving backward
-            turn_vel_threshold = 1.0     # |yaw_vel| < 1.0 means not turning back
+            fov_deg = 120.0
+            move_dist_threshold = 0.1
+            dead_end_threshold = 1.0
+            backward_vel_threshold = 0.0
+            turn_vel_threshold = 1.0
 
         class collision_config:
             contact_force_th = 0.1
-            vel_square_scale = 4.0  # (1.0 + 4.0*vel_square)
-            # Weights for different body parts
+            vel_square_scale = 4.0
             base_weight = 6.0
             head_weight = 10.0
             leg_weight = 10.0
@@ -285,16 +236,124 @@ class Go2PosRoughCfg( LeggedRobotPosCfg ):
         soft_torque_limit = 0.85
         max_contact_force = 100.
 
-class Go2PosRoughCfgPPO( LeggedRobotCfgPPO ):
+
+class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
+    class env(Go2PosRoughCfg.env):
+        num_envs = 512
+        episode_length_s = 40
+        goal_reached_time = 100
+        stay_time = 200
+
+    class replay:
+        enable_collision_replay = False
+        replay_prob = 0.0
+        early_reset_prob_range = [0.0, 0.0]
+        undo_steps_range = [1, 2]
+        max_collision_points = 10
+
+    class terrain(Go2PosRoughCfg.terrain):
+        terrain_types = ['dynamic_room_sparse']
+        terrain_proportions = [1.0]
+        num_rows = 4
+        num_cols = 4
+        curriculum = False
+        max_init_terrain_level = 0
+
+    class commands(Go2PosRoughCfg.commands):
+        class ranges(Go2PosRoughCfg.commands.ranges):
+            limit_vx = [-0.3, 1.0]
+            limit_vy = [-0.7, 0.7]
+            limit_vyaw = [-0.7, 0.7]
+
+    class sparse_room:
+        pillar_centers = [(3.6, 2.6), (6.4, 5.0), (3.6, 7.4)]
+        pillar_size = [0.8, 0.8, 0.6]
+        start_x_left = [1.0, 1.8]
+        start_x_right = [8.2, 9.0]
+        goal_x_left = [1.0, 1.8]
+        goal_x_right = [8.2, 9.0]
+        start_y_range = [1.5, 8.5]
+        goal_y_range = [1.5, 8.5]
+        spawn_clearance = 0.8
+
+    class dynamic_obstacles:
+        enable = True
+        count = 3
+        size = [0.45, 0.45, 0.8]
+        ray_radius = 0.32
+        kinematic = True
+        lane_x = [2.2, 5.0, 7.8]
+        lane_x_jitter = 0.15
+        y_min = 1.2
+        y_max = 8.8
+        speed_range = [0.15, 0.40]
+
+    class rewards(Go2PosRoughCfg.rewards):
+        class scales(Go2PosRoughCfg.rewards.scales):
+            dynamic_collision = -8.0
+
+        class close_obst_vel_config(Go2PosRoughCfg.rewards.close_obst_vel_config):
+            safe_vel_max = 0.30
+
+        class dynamic_collision_config:
+            threshold = 0.60
+            cooldown_steps = 10
+            early_reset = True
+
+
+class Go2PosSparseStaticCfg(Go2PosDynamicBaseCfg):
+    class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
+        enable = False
+        count = 0
+
+
+class Go2PosDynamic1Cfg(Go2PosDynamicBaseCfg):
+    class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
+        count = 1
+
+
+class Go2PosDynamic2Cfg(Go2PosDynamicBaseCfg):
+    class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
+        count = 2
+
+
+class Go2PosDynamic3Cfg(Go2PosDynamicBaseCfg):
+    class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
+        count = 3
+
+
+class Go2PosRoughCfgPPO(LeggedRobotCfgPPO):
     runner_class_name = 'OnPolicyRunner'
-    class algorithm( LeggedRobotCfgPPO.algorithm ):
+    class algorithm(LeggedRobotCfgPPO.algorithm):
         entropy_coef = 0.003
-        
-    class runner( LeggedRobotCfgPPO.runner ):
+
+    class runner(LeggedRobotCfgPPO.runner):
         run_name = ''
         experiment_name = 'Go2_pos_rough'
-        
         policy_class_name = 'DifferentiableSafeActorCritic'
-        # policy_class_name = 'ActorCritic'
         algorithm_class_name = 'PPO'
-        max_iterations = 2000 # number of policy updates
+        max_iterations = 2000
+
+
+class Go2PosSparseStaticCfgPPO(Go2PosRoughCfgPPO):
+    class runner(Go2PosRoughCfgPPO.runner):
+        run_name = ''
+        experiment_name = 'Go2_pos_sparse_static'
+
+
+class Go2PosDynamic1CfgPPO(Go2PosRoughCfgPPO):
+    class runner(Go2PosRoughCfgPPO.runner):
+        run_name = ''
+        experiment_name = 'Go2_pos_dynamic_1'
+
+
+class Go2PosDynamic2CfgPPO(Go2PosRoughCfgPPO):
+    class runner(Go2PosRoughCfgPPO.runner):
+        run_name = ''
+        experiment_name = 'Go2_pos_dynamic_2'
+
+
+class Go2PosDynamic3CfgPPO(Go2PosRoughCfgPPO):
+    class runner(Go2PosRoughCfgPPO.runner):
+        run_name = ''
+        experiment_name = 'Go2_pos_dynamic_3'
