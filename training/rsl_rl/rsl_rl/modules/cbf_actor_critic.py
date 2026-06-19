@@ -16,6 +16,8 @@ class DifferentiableSafeActorCritic(nn.Module):
                     init_noise_std=1.5,
                     num_props=12,
                     num_rays=41,
+                    num_goal_obs=2,
+                    num_dynamic_obs=0,
                     his_len=10,
                  **kwargs):
         super().__init__()
@@ -25,7 +27,9 @@ class DifferentiableSafeActorCritic(nn.Module):
         self.his_len = his_len
         self.num_rays = num_rays
         self.num_props = num_props
-        self.num_obs_one_step = num_rays + num_props + 2  # 2 for target x,y
+        self.num_goal_obs = num_goal_obs
+        self.num_dynamic_obs = num_dynamic_obs
+        self.num_obs_one_step = num_rays + num_props + num_goal_obs + num_dynamic_obs
         self.num_obs_hist = self.num_obs_one_step * his_len
         self.num_actions = num_actions
         self.num_latent = 16
@@ -120,15 +124,18 @@ class DifferentiableSafeActorCritic(nn.Module):
         obs_buf = observations[:, -self.num_obs_one_step:]
         props = obs_buf[:, :self.num_props]
         rays = obs_buf[:, self.num_props : self.num_props + self.num_rays]
-        goals = obs_buf[:, -2:]
-        return obs_buf, obs_hist, props, rays, goals
+        goal_start = self.num_props + self.num_rays
+        goal_end = goal_start + self.num_goal_obs
+        goals = obs_buf[:, goal_start:goal_end]
+        dyn = obs_buf[:, goal_end:]
+        return obs_buf, obs_hist, props, rays, goals, dyn
 
     def forward(self, observations):
         """
         Directly return the safety mean used to build the distribution.
         Following the original paper concept, CBF is the final layer of the network.
         """
-        obs_buf, obs_hist, props, rays, goals = self.extract(observations)
+        obs_buf, obs_hist, props, rays, goals, dyn = self.extract(observations)
         
         latent = self.encoder(obs_hist)
         obs_cat = torch.cat((obs_buf, latent.detach()), dim=-1)
@@ -168,7 +175,7 @@ class DifferentiableSafeActorCritic(nn.Module):
         return self.distribution.log_prob(actions).sum(dim=-1)
 
     def evaluate(self, observations, **kwargs):
-        obs_buf, obs_hist, props, rays, goals = self.extract(observations)
+        obs_buf, obs_hist, props, rays, goals, dyn = self.extract(observations)
         latent = self.encoder(obs_hist)
         observations = torch.cat(
                             (obs_buf, latent), dim=-1) 

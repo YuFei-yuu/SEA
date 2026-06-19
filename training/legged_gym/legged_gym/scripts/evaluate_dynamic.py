@@ -19,6 +19,7 @@ DYNAMIC_TASKS = {
     "go2_pos_dynamic_1",
     "go2_pos_dynamic_2",
     "go2_pos_dynamic_3",
+    "go2_pos_dynamic_complex",
 }
 
 
@@ -110,6 +111,9 @@ def evaluate(args):
         "total_collision_count": [],
         "dynamic_collision_count": [],
         "body_collision_count": [],
+        "near_miss_count": [],
+        "min_ttc": [],
+        "shield_intervention_rate": [],
         "timeout": [],
         "episode_duration": [],
         "time_to_goal": [],
@@ -129,6 +133,11 @@ def evaluate(args):
             total_collision_count = _scalar(episode_info.get("total_collision_count", 0.0))
             dynamic_collision_count = _scalar(episode_info.get("dynamic_collision_count", 0.0))
             body_collision_count = _scalar(episode_info.get("body_collision_count", 0.0))
+            near_miss_count = _scalar(episode_info.get("near_miss_count", 0.0))
+            min_ttc = _scalar(episode_info.get("min_ttc", 0.0))
+            shield_intervention_rate = _scalar(
+                episode_info.get("shield_intervention_rate", 0.0)
+            )
             timeout = _scalar(episode_info.get("timeout", 0.0))
             episode_duration = _scalar(episode_info.get("episode_duration", 0.0))
             time_to_goal = _scalar(episode_info.get("time_to_goal", 0.0))
@@ -138,6 +147,9 @@ def evaluate(args):
             stats["total_collision_count"].append(total_collision_count)
             stats["dynamic_collision_count"].append(dynamic_collision_count)
             stats["body_collision_count"].append(body_collision_count)
+            stats["near_miss_count"].append(near_miss_count)
+            stats["min_ttc"].append(min_ttc)
+            stats["shield_intervention_rate"].append(shield_intervention_rate)
             stats["timeout"].append(timeout)
             stats["episode_duration"].append(episode_duration)
             if success > 0.5:
@@ -148,6 +160,7 @@ def evaluate(args):
                 f"Episode {completed:03d}/{args.num_episodes} | "
                 f"success={success:.0f} safe_success={safe_success:.0f} "
                 f"dyn_col={dynamic_collision_count:.2f} body_col={body_collision_count:.2f} "
+                f"near_miss={near_miss_count:.2f} min_ttc={min_ttc:.2f} "
                 f"total_col={total_collision_count:.2f} timeout={timeout:.0f} duration={episode_duration:.2f}s"
             )
 
@@ -165,6 +178,9 @@ def evaluate(args):
     print(f"avg_total_collision_count: {mean('total_collision_count'):.4f}")
     print(f"avg_dynamic_collision_count: {mean('dynamic_collision_count'):.4f}")
     print(f"avg_body_collision_count: {mean('body_collision_count'):.4f}")
+    print(f"avg_near_miss_count: {mean('near_miss_count'):.4f}")
+    print(f"avg_min_ttc: {mean('min_ttc'):.4f}")
+    print(f"avg_shield_intervention_rate: {mean('shield_intervention_rate'):.4f}")
     print(f"timeout_rate: {mean('timeout'):.4f}")
     if stats["time_to_goal"]:
         print(f"mean_time_to_goal: {sum(stats['time_to_goal']) / len(stats['time_to_goal']):.4f}")

@@ -8,6 +8,27 @@ from legged_gym.envs.base.legged_robot_pos_config import LeggedRobotPosCfg
 import numpy as np
 
 
+DYNAMIC_ROOM_SPARSE_OBSTACLE_BOXES = (
+    (3.6, 2.6, 0.8, 0.8, 0.6),
+    (6.4, 5.0, 0.8, 0.8, 0.6),
+    (3.6, 7.4, 0.8, 0.8, 0.6),
+)
+
+
+DYNAMIC_ROOM_COMPLEX_OBSTACLE_BOXES = (
+    (2.7, 2.2, 0.7, 0.7, 0.6),
+    (4.4, 2.1, 1.4, 0.4, 0.6),
+    (6.6, 2.4, 0.7, 0.7, 0.6),
+    (7.9, 3.4, 0.4, 1.2, 0.6),
+    (3.1, 4.3, 0.4, 1.4, 0.6),
+    (5.2, 5.0, 0.8, 0.8, 0.6),
+    (7.1, 5.0, 1.2, 0.4, 0.6),
+    (2.4, 6.7, 0.7, 0.7, 0.6),
+    (4.8, 7.3, 1.4, 0.4, 0.6),
+    (6.8, 7.1, 0.4, 1.3, 0.6),
+)
+
+
 class Go2PosRoughCfg(LeggedRobotPosCfg):
     class loco:
         num_obs_buf = 45
@@ -27,7 +48,10 @@ class Go2PosRoughCfg(LeggedRobotPosCfg):
         num_props = 12
         num_rays = 41
         num_goal_obs = 2
-        num_obs_one_step = num_props + num_rays + num_goal_obs
+        dynamic_token_k = 0
+        dynamic_token_dim = 7
+        num_dynamic_obs = dynamic_token_k * dynamic_token_dim
+        num_obs_one_step = num_props + num_rays + num_goal_obs + num_dynamic_obs
         num_observations = num_obs_one_step * his_len
         num_envs = 2048
         episode_length_s = 60
@@ -243,9 +267,20 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
         episode_length_s = 40
         goal_reached_time = 100
         stay_time = 200
+        dynamic_token_k = 4
+        dynamic_token_dim = 7
+        num_dynamic_obs = dynamic_token_k * dynamic_token_dim
+        num_obs_one_step = (
+            Go2PosRoughCfg.env.num_props
+            + Go2PosRoughCfg.env.num_rays
+            + Go2PosRoughCfg.env.num_goal_obs
+            + num_dynamic_obs
+        )
+        num_observations = num_obs_one_step * Go2PosRoughCfg.env.his_len
 
     class replay:
         enable_collision_replay = False
+        enable_near_miss_replay = False
         replay_prob = 0.0
         early_reset_prob_range = [0.0, 0.0]
         undo_steps_range = [1, 2]
@@ -258,6 +293,8 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
         num_cols = 4
         curriculum = False
         max_init_terrain_level = 0
+        obstacle_boxes = DYNAMIC_ROOM_SPARSE_OBSTACLE_BOXES
+        boundary_wall_thickness = 0.4
 
     class commands(Go2PosRoughCfg.commands):
         class ranges(Go2PosRoughCfg.commands.ranges):
@@ -266,6 +303,7 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
             limit_vyaw = [-0.7, 0.7]
 
     class sparse_room:
+        obstacle_boxes = DYNAMIC_ROOM_SPARSE_OBSTACLE_BOXES
         pillar_centers = [(3.6, 2.6), (6.4, 5.0), (3.6, 7.4)]
         pillar_size = [0.8, 0.8, 0.6]
         start_x_left = [1.0, 1.8]
@@ -279,20 +317,42 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
     class dynamic_obstacles:
         enable = True
         count = 3
+        count_range = [3, 3]
         size = [0.45, 0.45, 0.8]
         ray_radius = 0.32
         kinematic = True
+        disable_simulation_contacts = False
+        fixed_base_link = False
+        collision_filter = 0
         lane_x = [2.2, 5.0, 7.8]
         lane_x_jitter = 0.15
         y_min = 1.2
         y_max = 8.8
         speed_range = [0.15, 0.40]
+        speed_range_eval_hard = [0.35, 0.80]
+        motion_type_probs = {
+            "linear_crossing": 1.0,
+            "linear_diagonal": 0.0,
+            "circular": 0.0,
+            "figure_eight": 0.0,
+        }
+        future_horizons = [0.2, 0.4, 0.6]
+        circle_radius_range = [0.6, 1.3]
+        figure_eight_scale_range = [0.7, 1.2]
+        diagonal_heading_jitter_deg = 20.0
+        spawn_min_separation = 0.9
+        spawn_goal_clearance = 1.2
+        obstacle_wall_margin = 0.5
+        max_spawn_attempts = 32
+        interaction_band_half_width = 1.25
         force_interaction = False
         force_interaction_jitter = 0.45
 
     class rewards(Go2PosRoughCfg.rewards):
         class scales(Go2PosRoughCfg.rewards.scales):
             dynamic_collision = -8.0
+            ttc_risk = -2.0
+            near_miss = -1.0
 
         class close_obst_vel_config(Go2PosRoughCfg.rewards.close_obst_vel_config):
             safe_vel_max = 0.30
@@ -301,6 +361,16 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
             threshold = 0.60
             cooldown_steps = 10
             early_reset = True
+
+        class ttc_risk_config:
+            threshold = 1.5
+            saturation = 0.25
+
+        class near_miss_config:
+            ttc_threshold = 1.0
+            clearance_threshold = 0.6
+            replay_clearance_threshold = 0.6
+            replay_ttc_threshold = 1.0
 
 
 class Go2PosSparseStaticCfg(Go2PosDynamicBaseCfg):
@@ -322,6 +392,57 @@ class Go2PosDynamic2Cfg(Go2PosDynamicBaseCfg):
 class Go2PosDynamic3Cfg(Go2PosDynamicBaseCfg):
     class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
         count = 3
+        count_range = [3, 3]
+
+
+class Go2PosDynamicComplexCfg(Go2PosDynamicBaseCfg):
+    class env(Go2PosDynamicBaseCfg.env):
+        num_envs = 384
+        episode_length_s = 45
+
+    class terrain(Go2PosDynamicBaseCfg.terrain):
+        obstacle_boxes = DYNAMIC_ROOM_COMPLEX_OBSTACLE_BOXES
+
+    class sparse_room(Go2PosDynamicBaseCfg.sparse_room):
+        obstacle_boxes = DYNAMIC_ROOM_COMPLEX_OBSTACLE_BOXES
+        spawn_clearance = 0.55
+
+    class replay(Go2PosDynamicBaseCfg.replay):
+        enable_collision_replay = False
+        enable_near_miss_replay = True
+        replay_prob = 0.6
+        undo_steps_range = [30, 60]
+
+    class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
+        count = 10
+        count_range = [6, 10]
+        speed_range = [0.35, 0.65]
+        fixed_base_link = True
+        collision_filter = 1
+        spawn_min_separation = 0.75
+        spawn_goal_clearance = 1.0
+        obstacle_wall_margin = 0.35
+        max_spawn_attempts = 24
+        motion_type_probs = {
+            "linear_crossing": 0.35,
+            "linear_diagonal": 0.20,
+            "circular": 0.25,
+            "figure_eight": 0.20,
+        }
+
+    class rewards(Go2PosDynamicBaseCfg.rewards):
+        class close_obst_vel_config(Go2PosDynamicBaseCfg.rewards.close_obst_vel_config):
+            safe_vel_max = 0.35
+
+        class dynamic_collision_config(Go2PosDynamicBaseCfg.rewards.dynamic_collision_config):
+            threshold = 0.65
+            early_reset = True
+
+        class near_miss_config(Go2PosDynamicBaseCfg.rewards.near_miss_config):
+            ttc_threshold = 1.0
+            clearance_threshold = 0.6
+            replay_clearance_threshold = 0.6
+            replay_ttc_threshold = 1.0
 
 
 class Go2PosRoughCfgPPO(LeggedRobotCfgPPO):
@@ -359,3 +480,9 @@ class Go2PosDynamic3CfgPPO(Go2PosRoughCfgPPO):
     class runner(Go2PosRoughCfgPPO.runner):
         run_name = ''
         experiment_name = 'Go2_pos_dynamic_3'
+
+
+class Go2PosDynamicComplexCfgPPO(Go2PosRoughCfgPPO):
+    class runner(Go2PosRoughCfgPPO.runner):
+        run_name = ''
+        experiment_name = 'Go2_pos_dynamic_complex'

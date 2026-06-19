@@ -352,24 +352,24 @@ class Terrain:
         terrain.height_field_raw[:] = 0
 
         wall_height = int(1.0 / terrain.vertical_scale)
-        pillar_height = int(0.6 / terrain.vertical_scale)
-        wall_thickness = max(3, int(0.4 / terrain.horizontal_scale))
+        wall_thickness_m = float(getattr(self.cfg, "boundary_wall_thickness", 0.4))
+        wall_thickness = max(3, int(wall_thickness_m / terrain.horizontal_scale))
 
         terrain.height_field_raw[:wall_thickness, :] = wall_height
         terrain.height_field_raw[-wall_thickness:, :] = wall_height
         terrain.height_field_raw[:, :wall_thickness] = wall_height
         terrain.height_field_raw[:, -wall_thickness:] = wall_height
 
-        pillar_centers = ((3.6, 2.6), (6.4, 5.0), (3.6, 7.4))
-        pillar_size = 0.8
-        half_extent = max(1, int(round((pillar_size * 0.5) / terrain.horizontal_scale)))
-
-        for center_x, center_y in pillar_centers:
+        obstacle_boxes = getattr(self.cfg, "obstacle_boxes", ())
+        for center_x, center_y, size_x, size_y, height in obstacle_boxes:
             cx = int(round(center_x / terrain.horizontal_scale))
             cy = int(round(center_y / terrain.horizontal_scale))
-            x0 = max(wall_thickness, cx - half_extent)
-            x1 = min(terrain.length - wall_thickness, cx + half_extent)
-            y0 = max(wall_thickness, cy - half_extent)
-            y1 = min(terrain.width - wall_thickness, cy + half_extent)
-            terrain.height_field_raw[x0:x1, y0:y1] = pillar_height
+            half_x = max(1, int(round((size_x * 0.5) / terrain.horizontal_scale)))
+            half_y = max(1, int(round((size_y * 0.5) / terrain.horizontal_scale)))
+            obstacle_height = int(height / terrain.vertical_scale)
+            x0 = max(wall_thickness, cx - half_x)
+            x1 = min(terrain.length - wall_thickness, cx + half_x)
+            y0 = max(wall_thickness, cy - half_y)
+            y1 = min(terrain.width - wall_thickness, cy + half_y)
+            terrain.height_field_raw[x0:x1, y0:y1] = obstacle_height
     

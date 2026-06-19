@@ -68,6 +68,8 @@ class OnPolicyRunner:
                                         num_props=self.env.num_props,
                                         his_len=self.env.cfg.env.his_len,
                                         num_rays=num_rays,
+                                        num_goal_obs=getattr(self.env.cfg.env, "num_goal_obs", 2),
+                                        num_dynamic_obs=getattr(self.env.cfg.env, "num_dynamic_obs", 0),
                                         **self.policy_cfg).to(self.device)
 
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO

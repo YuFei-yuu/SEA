@@ -27,6 +27,7 @@ DYNAMIC_TASKS = {
     "go2_pos_dynamic_1",
     "go2_pos_dynamic_2",
     "go2_pos_dynamic_3",
+    "go2_pos_dynamic_complex",
 }
 
 
@@ -40,6 +41,58 @@ def _has_saved_runs(experiment_name):
         if os.path.isdir(os.path.join(log_root, entry)):
             return True
     return False
+
+
+def _make_heuristic_policy(env):
+    vx_min = float(env.nav_clip_min[0].item()) if hasattr(env, "nav_clip_min") else -0.3
+    vx_max = float(env.nav_clip_max[0].item()) if hasattr(env, "nav_clip_max") else 1.0
+    vy_min = float(env.nav_clip_min[1].item()) if hasattr(env, "nav_clip_min") else -0.7
+    vy_max = float(env.nav_clip_max[1].item()) if hasattr(env, "nav_clip_max") else 0.7
+    vyaw_min = float(env.nav_clip_min[2].item()) if hasattr(env, "nav_clip_min") else -0.7
+    vyaw_max = float(env.nav_clip_max[2].item()) if hasattr(env, "nav_clip_max") else 0.7
+
+    def _policy(_obs):
+        goal_local = getattr(env, "goal_local_pos", None)
+        if goal_local is None:
+            goal_local = getattr(env, "delay_goal", None)
+        if goal_local is None:
+            return torch.zeros((env.num_envs, env.num_nav_actions), device=env.device)
+
+        goal_x = goal_local[:, 0]
+        goal_y = goal_local[:, 1]
+        goal_dist = torch.norm(goal_local, dim=1).clamp(min=1e-6)
+        goal_heading = torch.atan2(goal_y, goal_x.clamp(min=1e-6))
+        heading_scale = torch.cos(goal_heading).clamp(min=0.0, max=1.0)
+
+        vx_cmd = torch.clamp(0.9 * goal_dist * heading_scale, min=max(0.0, vx_min), max=vx_max)
+        vy_cmd = torch.clamp(0.4 * goal_y, min=vy_min, max=vy_max)
+        yaw_cmd = torch.clamp(1.2 * goal_heading, min=vyaw_min, max=vyaw_max)
+
+        rays = getattr(env, "rays", None)
+        if rays is not None and rays.shape[1] >= 9:
+            center = rays.shape[1] // 2
+            front = rays[:, center - 2:center + 3].amin(dim=1)
+            left = rays[:, center + 3:center + 9].mean(dim=1)
+            right = rays[:, center - 8:center - 2].mean(dim=1)
+
+            speed_scale = ((front - 0.35) / 1.0).clamp(0.0, 1.0)
+            side_bias = (right - left).clamp(-0.8, 0.8)
+
+            vx_cmd = torch.clamp(vx_cmd * (0.2 + 0.8 * speed_scale), min=max(0.0, vx_min), max=vx_max)
+            vy_cmd = torch.clamp(vy_cmd + 0.2 * side_bias, min=vy_min, max=vy_max)
+            yaw_cmd = torch.clamp(yaw_cmd + 0.5 * side_bias, min=vyaw_min, max=vyaw_max)
+
+            close_front = front < 0.55
+            vx_cmd = torch.where(close_front, torch.zeros_like(vx_cmd), vx_cmd)
+
+        near_goal = goal_dist < 0.45
+        vx_cmd = torch.where(near_goal, torch.zeros_like(vx_cmd), vx_cmd)
+        vy_cmd = torch.where(near_goal, torch.zeros_like(vy_cmd), vy_cmd)
+        yaw_cmd = torch.where(near_goal, torch.zeros_like(yaw_cmd), yaw_cmd)
+
+        return torch.stack((vx_cmd, vy_cmd, yaw_cmd), dim=1)
+
+    return _policy
 
 
 def _apply_record_overrides(env_cfg, args):
@@ -118,9 +171,21 @@ def _draw_minimap_overlay(frame, env, episode_idx, frame_idx, latest_episode_inf
     # Draw static pillars for sparse-room tasks.
     sparse_cfg = getattr(env.cfg, "sparse_room", None)
     if sparse_cfg is not None:
-        half_x = sparse_cfg.pillar_size[0] * 0.5
-        half_y = sparse_cfg.pillar_size[1] * 0.5
-        for center_x, center_y in sparse_cfg.pillar_centers:
+        obstacle_boxes = getattr(sparse_cfg, "obstacle_boxes", None)
+        if obstacle_boxes is None:
+            obstacle_boxes = [
+                (
+                    center_x,
+                    center_y,
+                    sparse_cfg.pillar_size[0],
+                    sparse_cfg.pillar_size[1],
+                    sparse_cfg.pillar_size[2],
+                )
+                for center_x, center_y in sparse_cfg.pillar_centers
+            ]
+        for center_x, center_y, size_x, size_y, _ in obstacle_boxes:
+            half_x = size_x * 0.5
+            half_y = size_y * 0.5
             p0 = _world_to_minimap(np.array([room_origin[0] + center_x - half_x, room_origin[1] + center_y - half_y]), room_origin, room_size, (x0, y0), MINIMAP_SIZE)
             p1 = _world_to_minimap(np.array([room_origin[0] + center_x + half_x, room_origin[1] + center_y + half_y]), room_origin, room_size, (x0, y0), MINIMAP_SIZE)
             cv2.rectangle(frame, (min(p0[0], p1[0]), min(p0[1], p1[1])), (max(p0[0], p1[0]), max(p0[1], p1[1])), (105, 105, 105), -1)
@@ -177,34 +242,51 @@ def _maybe_set_resume_fallback(train_cfg, args):
         train_cfg.runner.resume_experiment_name = "Go2_pos_rough"
 
 
+def _build_policy(env, train_cfg, args):
+    train_cfg.runner.resume = True
+    train_cfg.runner.load_run = args.load_run if args.load_run is not None else -1
+    train_cfg.runner.checkpoint = args.checkpoint if args.checkpoint is not None else -1
+    _maybe_set_resume_fallback(train_cfg, args)
+
+    try:
+        ppo_runner, train_cfg = task_registry.make_alg_runner(
+            env=env,
+            name=args.task,
+            args=args,
+            train_cfg=train_cfg,
+        )
+        policy = ppo_runner.get_inference_policy(device=env.device)
+        loaded_path = task_registry.loaded_policy_path
+        print(f"Loaded policy from: {loaded_path}")
+        return policy, loaded_path, "policy"
+    except Exception as exc:
+        print(f"Falling back to heuristic recorder because policy load failed: {exc}")
+        return _make_heuristic_policy(env), None, "heuristic"
+
+
 def play(args):
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     _apply_record_overrides(env_cfg, args)
     args.headless = True
 
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
-
-    train_cfg.runner.resume = True
-    train_cfg.runner.load_run = args.load_run if args.load_run is not None else -1
-    train_cfg.runner.checkpoint = args.checkpoint if args.checkpoint is not None else -1
-    _maybe_set_resume_fallback(train_cfg, args)
-
-    ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args, train_cfg=train_cfg)
-    policy = ppo_runner.get_inference_policy(device=env.device)
-    loaded_path = task_registry.loaded_policy_path
-    print(f"Loaded policy from: {loaded_path}")
+    policy, loaded_path, policy_mode = _build_policy(env, train_cfg, args)
 
     cam_props = gymapi.CameraProperties()
     cam_props.width = CAM_RES[0]
     cam_props.height = CAM_RES[1]
     cam_handle = env.gym.create_camera_sensor(env.envs[0], cam_props)
 
-    run_name = os.path.basename(os.path.dirname(loaded_path))
-    ckpt_name = os.path.splitext(os.path.basename(loaded_path))[0]
     log_dir = os.path.join(LEGGED_GYM_ROOT_DIR, "logs", train_cfg.runner.experiment_name, "exported")
     os.makedirs(log_dir, exist_ok=True)
-    video_path = os.path.join(log_dir, f"{run_name}{ckpt_name}.mp4")
+    if loaded_path is not None:
+        run_name = os.path.basename(os.path.dirname(loaded_path))
+        ckpt_name = os.path.splitext(os.path.basename(loaded_path))[0]
+        video_path = os.path.join(log_dir, f"{run_name}{ckpt_name}.mp4")
+    else:
+        video_path = os.path.join(log_dir, f"{args.task}_{policy_mode}_env_check.mp4")
     print(f"Video will be saved to: {video_path}")
+    print(f"Recorder mode: {policy_mode}")
 
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
     video = cv2.VideoWriter(video_path, fourcc, FPS, CAM_RES)
@@ -227,6 +309,7 @@ def play(args):
             obs, _, _, dones, infos = env.step(actions.detach())
 
             if frame_count < MAX_FRAMES:
+                env.gym.render_all_camera_sensors(env.sim)
                 img = env.gym.get_camera_image(env.sim, env.envs[0], cam_handle, gymapi.IMAGE_COLOR)
                 img = img.reshape((CAM_RES[1], CAM_RES[0], 4))[:, :, :3]
                 img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)

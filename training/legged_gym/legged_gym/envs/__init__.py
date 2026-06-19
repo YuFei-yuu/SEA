@@ -13,6 +13,8 @@ from .go2.go2_pos_config import (
     Go2PosDynamic2CfgPPO,
     Go2PosDynamic3Cfg,
     Go2PosDynamic3CfgPPO,
+    Go2PosDynamicComplexCfg,
+    Go2PosDynamicComplexCfgPPO,
     Go2PosRoughCfg,
     Go2PosRoughCfgPPO,
     Go2PosSparseStaticCfg,
@@ -27,3 +29,4 @@ task_registry.register("go2_pos_sparse_static", LeggedRobotPosDynamic, Go2PosSpa
 task_registry.register("go2_pos_dynamic_1", LeggedRobotPosDynamic, Go2PosDynamic1Cfg(), Go2PosDynamic1CfgPPO())
 task_registry.register("go2_pos_dynamic_2", LeggedRobotPosDynamic, Go2PosDynamic2Cfg(), Go2PosDynamic2CfgPPO())
 task_registry.register("go2_pos_dynamic_3", LeggedRobotPosDynamic, Go2PosDynamic3Cfg(), Go2PosDynamic3CfgPPO())
+task_registry.register("go2_pos_dynamic_complex", LeggedRobotPosDynamic, Go2PosDynamicComplexCfg(), Go2PosDynamicComplexCfgPPO())

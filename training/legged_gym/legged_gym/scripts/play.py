@@ -19,6 +19,7 @@ DYNAMIC_TASKS = {
     "go2_pos_dynamic_1",
     "go2_pos_dynamic_2",
     "go2_pos_dynamic_3",
+    "go2_pos_dynamic_complex",
 }
 
 
@@ -130,7 +131,13 @@ def play(args):
                 episode_info = infos.get("episode", {})
                 success = float(episode_info.get("success", 0.0))
                 dyn_col = float(episode_info.get("dynamic_collision_count", 0.0))
-                print(f"Episode {episode_count} finished | success={success:.2f} dynamic_collision_count={dyn_col:.2f}")
+                near_miss = float(episode_info.get("near_miss_count", 0.0))
+                min_ttc = float(episode_info.get("min_ttc", 0.0))
+                print(
+                    f"Episode {episode_count} finished | success={success:.2f} "
+                    f"dynamic_collision_count={dyn_col:.2f} near_miss={near_miss:.2f} "
+                    f"min_ttc={min_ttc:.2f}"
+                )
 
             if episode_count == total_episodes:
                 print(f"Reached {total_episodes} episodes, stopping.")

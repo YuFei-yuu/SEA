@@ -217,6 +217,7 @@ def export_policy_as_jit(actor_critic, path, exported_policy_name):
                     self.num_obs_one_step = ac.num_obs_one_step
                     self.num_props = ac.num_props
                     self.num_rays = ac.num_rays
+                    self.num_goal_obs = getattr(ac, "num_goal_obs", 2)
                     
                 def forward(self, observations):
                     obs_buf = observations[:, -self.num_obs_one_step:]
