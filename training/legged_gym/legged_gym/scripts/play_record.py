@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
+import argparse
 import os
+import sys
 
 from legged_gym import LEGGED_GYM_ROOT_DIR
 import isaacgym
@@ -15,7 +17,7 @@ from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry
 
 
-TOTAL_EPISODES = 5
+DEFAULT_TOTAL_EPISODES = 5
 FPS = 30
 CAM_RES = (1000, 1000)
 VIEW_OFFSET = (4.0, -4.0, 3.0)
@@ -29,6 +31,16 @@ DYNAMIC_TASKS = {
     "go2_pos_dynamic_3",
     "go2_pos_dynamic_complex",
 }
+
+def _parse_record_args():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--num_episodes", type=int, default=DEFAULT_TOTAL_EPISODES)
+    known_args, remaining = parser.parse_known_args()
+    sys.argv = [sys.argv[0]] + remaining
+    base_args = get_args()
+    base_args.num_episodes = known_args.num_episodes
+    return base_args
+
 
 
 def _has_saved_runs(experiment_name):
@@ -148,7 +160,7 @@ def _world_to_minimap(point_xy, room_origin_xy, room_size, canvas_origin, canvas
     return px, py
 
 
-def _draw_minimap_overlay(frame, env, episode_idx, frame_idx, latest_episode_info):
+def _draw_minimap_overlay(frame, env, episode_idx, frame_idx, latest_episode_info, total_episodes):
     if not hasattr(env, "room_origins"):
         return frame
 
@@ -205,7 +217,7 @@ def _draw_minimap_overlay(frame, env, episode_idx, frame_idx, latest_episode_inf
     cv2.line(frame, start_px, goal_px, (160, 160, 160), 1, cv2.LINE_AA)
 
     dist_to_goal = float(torch.norm(env.position_targets[0, :2] - env.root_states[0, :2]).item())
-    _draw_label(frame, f"Episode: {episode_idx + 1}/{TOTAL_EPISODES}", (x0 - 4, y1 + 24), (255, 255, 255))
+    _draw_label(frame, f"Episode: {episode_idx + 1}/{total_episodes}", (x0 - 4, y1 + 24), (255, 255, 255))
     _draw_label(frame, f"Frame: {frame_idx}", (x0 - 4, y1 + 46), (255, 255, 255))
     _draw_label(frame, f"Dist->Goal: {dist_to_goal:.2f}m", (x0 - 4, y1 + 68), (255, 255, 255))
 
@@ -313,7 +325,14 @@ def play(args):
                 img = env.gym.get_camera_image(env.sim, env.envs[0], cam_handle, gymapi.IMAGE_COLOR)
                 img = img.reshape((CAM_RES[1], CAM_RES[0], 4))[:, :, :3]
                 img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-                img_bgr = _draw_minimap_overlay(img_bgr, env, episode_count, frame_count, latest_episode_info)
+                img_bgr = _draw_minimap_overlay(
+                    img_bgr,
+                    env,
+                    episode_count,
+                    frame_count,
+                    latest_episode_info,
+                    args.num_episodes,
+                )
                 video.write(img_bgr)
                 frame_count += 1
                 if frame_count % 100 == 0:
@@ -328,10 +347,13 @@ def play(args):
                 latest_episode_info = episode_info
                 success = float(episode_info.get("success", 0.0))
                 dyn_col = float(episode_info.get("dynamic_collision_count", 0.0))
-                print(f"=== Episode {episode_count}/{TOTAL_EPISODES} finished | success={success:.2f} dynamic_collision_count={dyn_col:.2f} ===")
+                print(
+                    f"=== Episode {episode_count}/{args.num_episodes} finished | "
+                    f"success={success:.2f} dynamic_collision_count={dyn_col:.2f} ==="
+                )
 
-            if episode_count >= TOTAL_EPISODES:
-                print(f"Reached {TOTAL_EPISODES} episodes, stopping.")
+            if episode_count >= args.num_episodes:
+                print(f"Reached {args.num_episodes} episodes, stopping.")
                 break
 
     video.release()
@@ -340,5 +362,5 @@ def play(args):
 
 
 if __name__ == "__main__":
-    args = get_args()
+    args = _parse_record_args()
     play(args)

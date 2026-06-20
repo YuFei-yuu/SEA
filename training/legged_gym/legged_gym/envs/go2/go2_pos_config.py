@@ -16,16 +16,25 @@ DYNAMIC_ROOM_SPARSE_OBSTACLE_BOXES = (
 
 
 DYNAMIC_ROOM_COMPLEX_OBSTACLE_BOXES = (
-    (2.7, 2.2, 0.7, 0.7, 0.6),
-    (4.4, 2.1, 1.4, 0.4, 0.6),
-    (6.6, 2.4, 0.7, 0.7, 0.6),
-    (7.9, 3.4, 0.4, 1.2, 0.6),
+    (1.6, 2.0, 0.7, 0.7, 0.6),
+    (2.9, 1.2, 1.0, 0.4, 0.6),
+    (4.7, 1.9, 0.5, 1.1, 0.6),
+    (6.5, 1.2, 1.2, 0.4, 0.6),
+    (8.4, 2.0, 0.7, 0.7, 0.6),
+    (1.4, 3.9, 0.4, 1.1, 0.6),
     (3.1, 4.3, 0.4, 1.4, 0.6),
-    (5.2, 5.0, 0.8, 0.8, 0.6),
-    (7.1, 5.0, 1.2, 0.4, 0.6),
-    (2.4, 6.7, 0.7, 0.7, 0.6),
-    (4.8, 7.3, 1.4, 0.4, 0.6),
-    (6.8, 7.1, 0.4, 1.3, 0.6),
+    (5.2, 3.6, 0.8, 0.5, 0.6),
+    (6.8, 4.5, 0.5, 1.1, 0.6),
+    (8.6, 4.0, 0.4, 1.2, 0.6),
+    (1.6, 6.2, 0.7, 0.7, 0.6),
+    (3.3, 6.9, 1.0, 0.4, 0.6),
+    (5.0, 5.9, 0.7, 0.7, 0.6),
+    (6.6, 6.8, 1.1, 0.4, 0.6),
+    (8.4, 6.1, 0.7, 0.7, 0.6),
+    (2.4, 8.1, 1.1, 0.4, 0.6),
+    (4.4, 7.8, 0.5, 1.0, 0.6),
+    (6.3, 8.1, 1.1, 0.4, 0.6),
+    (7.9, 7.7, 0.4, 1.0, 0.6),
 )
 
 
@@ -336,11 +345,14 @@ class Go2PosDynamicBaseCfg(Go2PosRoughCfg):
             "circular": 0.0,
             "figure_eight": 0.0,
         }
+        trajectory_mode = "online"
+        trajectory_extra_horizon = 0.0
         future_horizons = [0.2, 0.4, 0.6]
         circle_radius_range = [0.6, 1.3]
         figure_eight_scale_range = [0.7, 1.2]
         diagonal_heading_jitter_deg = 20.0
         spawn_min_separation = 0.9
+        spawn_start_clearance = 1.2
         spawn_goal_clearance = 1.2
         obstacle_wall_margin = 0.5
         max_spawn_attempts = 32
@@ -399,6 +411,8 @@ class Go2PosDynamicComplexCfg(Go2PosDynamicBaseCfg):
     class env(Go2PosDynamicBaseCfg.env):
         num_envs = 384
         episode_length_s = 45
+        goal_reached_time = 20
+        hard_contact_warmup_steps = 10
 
     class terrain(Go2PosDynamicBaseCfg.terrain):
         obstacle_boxes = DYNAMIC_ROOM_COMPLEX_OBSTACLE_BOXES
@@ -409,38 +423,50 @@ class Go2PosDynamicComplexCfg(Go2PosDynamicBaseCfg):
 
     class replay(Go2PosDynamicBaseCfg.replay):
         enable_collision_replay = False
-        enable_near_miss_replay = True
-        replay_prob = 0.6
+        enable_near_miss_replay = False
+        replay_prob = 0.4
         undo_steps_range = [30, 60]
 
     class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
-        count = 10
-        count_range = [6, 10]
-        speed_range = [0.35, 0.65]
-        fixed_base_link = True
+        count = 8
+        count_range = [2, 4]
+        speed_range = [0.15, 0.35]
+        trajectory_mode = "episode_precomputed"
+        trajectory_extra_horizon = 0.8
+        disable_simulation_contacts = True
+        fixed_base_link = False
         collision_filter = 1
         spawn_min_separation = 0.75
+        spawn_start_clearance = 1.6
         spawn_goal_clearance = 1.0
         obstacle_wall_margin = 0.35
         max_spawn_attempts = 24
         motion_type_probs = {
-            "linear_crossing": 0.35,
-            "linear_diagonal": 0.20,
-            "circular": 0.25,
-            "figure_eight": 0.20,
+            "linear_crossing": 0.75,
+            "linear_diagonal": 0.15,
+            "circular": 0.10,
+            "figure_eight": 0.00,
         }
 
     class rewards(Go2PosDynamicBaseCfg.rewards):
+        class scales(Go2PosDynamicBaseCfg.rewards.scales):
+            goal_progress = 6.0
+            ttc_risk = -0.8
+            near_miss = -0.3
+
+        class goal_progress_config:
+            max_progress = 0.25
+
         class close_obst_vel_config(Go2PosDynamicBaseCfg.rewards.close_obst_vel_config):
-            safe_vel_max = 0.35
+            safe_vel_max = 0.45
 
         class dynamic_collision_config(Go2PosDynamicBaseCfg.rewards.dynamic_collision_config):
             threshold = 0.65
             early_reset = True
 
         class near_miss_config(Go2PosDynamicBaseCfg.rewards.near_miss_config):
-            ttc_threshold = 1.0
-            clearance_threshold = 0.6
+            ttc_threshold = 0.8
+            clearance_threshold = 0.5
             replay_clearance_threshold = 0.6
             replay_ttc_threshold = 1.0
 

@@ -394,6 +394,12 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
             device=self.device,
             dtype=torch.bool,
         )
+        self.replay_dynamic_traj_step = torch.zeros(
+            self.num_envs,
+            self.replay_len,
+            device=self.device,
+            dtype=torch.long,
+        )
 
     def _init_buffers(self):
         actor_root_state = self.gym.acquire_actor_root_state_tensor(self.sim)
@@ -578,6 +584,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.distance = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float, requires_grad=False
         )
+        self.prev_distance = torch.zeros_like(self.distance)
         self.goal_local_pos = torch.zeros(
             self.num_envs, 2, device=self.device, requires_grad=False
         )
@@ -707,6 +714,9 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.near_miss_event = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.bool
         )
+        self.near_miss_occurred = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
         self.near_miss_count = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.long
         )
@@ -719,11 +729,66 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.predicted_min_clearance = torch.full(
             (self.num_envs,), 5.0, device=self.device, dtype=torch.float
         )
+        self.min_dynamic_clearance = torch.full(
+            (self.num_envs,), 5.0, device=self.device, dtype=torch.float
+        )
         self.shield_intervention_rate = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float
         )
+        self.dynamic_cbf_intervention_rate = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.shield_intervention_sum = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.dynamic_cbf_intervention_sum = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.shield_intervention_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.dynamic_cbf_intervention_steps = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
+        self.reset_goal = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.reset_stand_still = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.reset_timeout = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.reset_fall = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.reset_contact50 = torch.zeros(self.num_envs, device=self.device, dtype=torch.bool)
+        self.reset_initial_contact50 = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.reset_spawn_collision = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.reset_terminate_contact = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
+        self.reset_dynamic_collision = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
         self.dynamic_motion_counts = torch.zeros(
             self.num_envs, 4, device=self.device, dtype=torch.long
+        )
+        traj_len = int(
+            self.max_episode_length
+            + math.ceil(
+                float(getattr(self._dynamic_cfg(), "trajectory_extra_horizon", 0.0))
+                / max(self.dt, 1e-6)
+            )
+            + 2
+        )
+        self.dynamic_traj_pos = torch.zeros(
+            self.num_envs,
+            self.dynamic_obs_count,
+            traj_len,
+            2,
+            device=self.device,
+            dtype=torch.float,
+        )
+        self.dynamic_traj_vel = torch.zeros_like(self.dynamic_traj_pos)
+        self.dynamic_traj_step = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.long
         )
 
     def _set_actor_root_states_indexed(self, actor_indices):
@@ -744,6 +809,11 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         if self.dynamic_obs_count == 0 or len(env_ids) == 0:
             return
         self._set_actor_root_states_indexed(self.dynamic_actor_indices[env_ids].reshape(-1))
+
+    def _check_spawn_collision(self):
+        before_reset = self.reset_buf.clone()
+        super()._check_spawn_collision()
+        self.reset_spawn_collision = self.reset_buf & (~before_reset) & self.initial_
 
     def _reset_dofs(self, env_ids):
         if len(env_ids) == 0:
@@ -802,8 +872,9 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         )
         start_pt = robot_local[0]
         goal_pt = goal_local[0]
+        start_clearance = float(getattr(cfg, "spawn_start_clearance", getattr(cfg, "spawn_goal_clearance", 1.2))) + extra_clearance
         goal_clearance = float(getattr(cfg, "spawn_goal_clearance", 1.2)) + extra_clearance
-        if torch.norm(point_xy - start_pt) < goal_clearance:
+        if torch.norm(point_xy - start_pt) < start_clearance:
             return False
         if torch.norm(point_xy - goal_pt) < goal_clearance:
             return False
@@ -906,6 +977,218 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
 
     def _wrap_phase(self, phase):
         return torch.remainder(phase, 2.0 * math.pi)
+
+    def _uses_precomputed_dynamic_trajectories(self):
+        return (
+            self.dynamic_obs_count > 0
+            and getattr(self._dynamic_cfg(), "trajectory_mode", "online")
+            == "episode_precomputed"
+        )
+
+    def _trajectory_len(self):
+        return self.dynamic_traj_pos.shape[2]
+
+    def _sample_precomputed_center(self, env_idx, margin=0.0):
+        cfg = self._dynamic_cfg()
+        x_min, x_max, y_min, y_max = self._room_bounds()
+        x_min += margin
+        x_max -= margin
+        y_min += margin
+        y_max -= margin
+        robot_local, goal_local = self._local_robot_start_goal(
+            torch.tensor([env_idx], device=self.device)
+        )
+        start_pt = robot_local[0]
+        goal_pt = goal_local[0]
+        start_clearance = float(getattr(cfg, "spawn_start_clearance", getattr(cfg, "spawn_goal_clearance", 1.0)))
+        goal_clearance = float(getattr(cfg, "spawn_goal_clearance", 1.0))
+        force_interaction = bool(getattr(cfg, "force_interaction", False))
+        interaction_band = float(getattr(cfg, "interaction_band_half_width", 1.25))
+        jitter = float(getattr(cfg, "force_interaction_jitter", 0.45))
+        corridor_mid_y = 0.5 * (start_pt[1] + goal_pt[1])
+
+        for _ in range(32):
+            x = torch.empty(1, device=self.device).uniform_(x_min, x_max)[0]
+            if force_interaction:
+                low_y = torch.clamp(corridor_mid_y - jitter, min=y_min, max=y_max)
+                high_y = torch.clamp(corridor_mid_y + jitter, min=y_min, max=y_max)
+            else:
+                low_y = max(y_min, float((corridor_mid_y - interaction_band).item()))
+                high_y = min(y_max, float((corridor_mid_y + interaction_band).item()))
+            low_y = float(low_y.item() if torch.is_tensor(low_y) else low_y)
+            high_y = float(high_y.item() if torch.is_tensor(high_y) else high_y)
+            if low_y > high_y:
+                low_y, high_y = y_min, y_max
+            y = torch.empty(1, device=self.device).uniform_(low_y, high_y)[0]
+            center = torch.stack([x, y])
+            if torch.norm(center - start_pt) >= start_clearance and torch.norm(center - goal_pt) >= goal_clearance:
+                return center
+
+        return torch.tensor(
+            [0.5 * (x_min + x_max), 0.5 * (y_min + y_max)],
+            device=self.device,
+            dtype=torch.float,
+        )
+
+    def _precompute_linear_pingpong(self, start, velocity, lower, upper, steps):
+        t = torch.arange(steps, device=self.device, dtype=torch.float) * self.dt
+        speed = torch.norm(velocity).clamp(min=1e-6)
+        direction = velocity / speed
+        lower_s = torch.sum(lower * direction)
+        upper_s = torch.sum(upper * direction)
+        use_lower_as_base = lower_s <= upper_s
+        base = torch.where(use_lower_as_base, lower, upper)
+        min_s = torch.minimum(lower_s, upper_s)
+        max_s = torch.maximum(lower_s, upper_s)
+        span = (max_s - min_s).clamp(min=0.2)
+        signed0 = torch.sum(start * direction) - min_s
+        signed = signed0 + speed * t
+        period = 2.0 * span
+        phase = torch.remainder(signed, period)
+        dist = torch.where(phase <= span, phase, period - phase)
+        pos = base.unsqueeze(0) + dist.unsqueeze(1) * direction.unsqueeze(0)
+        vel_sign = torch.where(phase <= span, 1.0, -1.0)
+        vel = vel_sign.unsqueeze(1) * speed * direction.unsqueeze(0)
+        return pos, vel
+
+    def _precompute_parametric_slot(self, env_idx, motion_type, speed, phase):
+        cfg = self._dynamic_cfg()
+        x_min, x_max, y_min, y_max = self._room_bounds()
+        steps = self._trajectory_len()
+        t = torch.arange(steps, device=self.device, dtype=torch.float) * self.dt
+        pos = torch.zeros(steps, 2, device=self.device, dtype=torch.float)
+        vel = torch.zeros_like(pos)
+        center = torch.zeros(2, device=self.device, dtype=torch.float)
+        anchor = torch.zeros(2, device=self.device, dtype=torch.float)
+        shape_params = torch.zeros(4, device=self.device, dtype=torch.float)
+        velocity = torch.zeros(2, device=self.device, dtype=torch.float)
+        phase_speed = 0.0
+
+        if motion_type == self.MOTION_LINEAR_CROSSING:
+            center = self._sample_precomputed_center(env_idx)
+            direction = 1.0 if torch.rand(1, device=self.device).item() > 0.5 else -1.0
+            velocity = torch.tensor([0.0, direction * speed], device=self.device)
+            lower = torch.tensor([center[0], y_min], device=self.device)
+            upper = torch.tensor([center[0], y_max], device=self.device)
+            pos, vel = self._precompute_linear_pingpong(center, velocity, lower, upper, steps)
+            anchor = pos[0].clone()
+            center = pos[0].clone()
+        elif motion_type == self.MOTION_LINEAR_DIAGONAL:
+            center = self._sample_precomputed_center(env_idx)
+            velocity = self._sample_linear_diagonal_velocity(speed)
+            direction = velocity / torch.norm(velocity).clamp(min=1e-6)
+            candidates = []
+            eps = 1e-6
+            for axis, low, high in ((0, x_min, x_max), (1, y_min, y_max)):
+                if abs(float(direction[axis].item())) > eps:
+                    candidates.append((low - center[axis]) / direction[axis])
+                    candidates.append((high - center[axis]) / direction[axis])
+            candidates = torch.stack(candidates)
+            forward = candidates[candidates >= 0.0].min()
+            backward = candidates[candidates <= 0.0].max()
+            lower = center + backward * direction
+            upper = center + forward * direction
+            pos, vel = self._precompute_linear_pingpong(center, velocity, lower, upper, steps)
+            anchor = pos[0].clone()
+            center = pos[0].clone()
+        elif motion_type == self.MOTION_CIRCULAR:
+            radius_min, radius_max = getattr(cfg, "circle_radius_range", [0.6, 1.3])
+            max_radius = max(0.2, min(radius_max, 0.5 * min(x_max - x_min, y_max - y_min) - 0.05))
+            radius = float(torch.empty(1, device=self.device).uniform_(radius_min, max_radius).item())
+            anchor = self._sample_precomputed_center(env_idx, margin=radius)
+            direction = 1.0 if torch.rand(1, device=self.device).item() > 0.5 else -1.0
+            phase_speed = direction * speed / max(radius, 1e-3)
+            theta = phase + phase_speed * t
+            pos = anchor.unsqueeze(0) + torch.stack(
+                [radius * torch.cos(theta), radius * torch.sin(theta)], dim=-1
+            )
+            vel = torch.stack(
+                [-radius * phase_speed * torch.sin(theta), radius * phase_speed * torch.cos(theta)],
+                dim=-1,
+            )
+            center = anchor.clone()
+            shape_params[0] = radius
+            shape_params[1] = phase_speed
+        else:
+            scale_min, scale_max = getattr(cfg, "figure_eight_scale_range", [0.7, 1.2])
+            max_scale = max(0.2, min(scale_max, 0.5 * min(x_max - x_min, y_max - y_min) - 0.05))
+            scale_x = float(torch.empty(1, device=self.device).uniform_(scale_min, max_scale).item())
+            scale_y = float(torch.empty(1, device=self.device).uniform_(scale_min, max_scale).item())
+            anchor = self._sample_precomputed_center(env_idx, margin=max(scale_x, scale_y))
+            direction = 1.0 if torch.rand(1, device=self.device).item() > 0.5 else -1.0
+            phase_speed = direction * speed / max(max(scale_x, scale_y), 1e-3)
+            theta = phase + phase_speed * t
+            pos = anchor.unsqueeze(0) + torch.stack(
+                [scale_x * torch.sin(theta), scale_y * torch.sin(2.0 * theta)],
+                dim=-1,
+            )
+            vel = torch.stack(
+                [
+                    scale_x * phase_speed * torch.cos(theta),
+                    2.0 * scale_y * phase_speed * torch.cos(2.0 * theta),
+                ],
+                dim=-1,
+            )
+            center = anchor.clone()
+            shape_params[0] = scale_x
+            shape_params[1] = scale_y
+            shape_params[2] = phase_speed
+
+        pos[:, 0].clamp_(x_min, x_max)
+        pos[:, 1].clamp_(y_min, y_max)
+        return pos, vel, center, anchor, shape_params, velocity, phase_speed
+
+    def _generate_precomputed_dynamic_trajectories(self, env_ids):
+        if self.dynamic_obs_count == 0 or len(env_ids) == 0:
+            return
+        low_count, high_count = self._dynamic_count_range()
+        self.dynamic_active_mask[env_ids] = False
+        self.dynamic_motion_types[env_ids] = -1
+        self.dynamic_local_pos[env_ids] = 0.0
+        self.dynamic_velocity_vectors[env_ids] = 0.0
+        self.dynamic_centers[env_ids] = 0.0
+        self.dynamic_anchor_points[env_ids] = 0.0
+        self.dynamic_shape_params[env_ids] = 0.0
+        self.dynamic_phase[env_ids] = 0.0
+        self.dynamic_phase_speed[env_ids] = 0.0
+        self.dynamic_motion_counts[env_ids] = 0
+        self.dynamic_traj_pos[env_ids] = 0.0
+        self.dynamic_traj_vel[env_ids] = 0.0
+        self.dynamic_traj_step[env_ids] = 0
+
+        active_counts = torch.randint(
+            low_count, high_count + 1, (len(env_ids),), device=self.device
+        )
+        for local_i, env_id in enumerate(env_ids.tolist()):
+            desired = int(active_counts[local_i].item())
+            motion_types = self._sample_motion_types(desired)
+            for slot_idx in range(desired):
+                motion_type = int(motion_types[slot_idx].item())
+                speed = float(
+                    torch_rand_float(
+                        self._dynamic_cfg().speed_range[0],
+                        self._dynamic_cfg().speed_range[1],
+                        (1, 1),
+                        device=self.device,
+                    )[0, 0].item()
+                )
+                phase = float(torch.empty(1, device=self.device).uniform_(0.0, 2.0 * math.pi).item())
+                pos, vel, center, anchor, shape_params, velocity, phase_speed = (
+                    self._precompute_parametric_slot(env_id, motion_type, speed, phase)
+                )
+                self.dynamic_traj_pos[env_id, slot_idx] = pos
+                self.dynamic_traj_vel[env_id, slot_idx] = vel
+                self.dynamic_motion_types[env_id, slot_idx] = motion_type
+                self.dynamic_active_mask[env_id, slot_idx] = True
+                self.dynamic_centers[env_id, slot_idx] = center
+                self.dynamic_anchor_points[env_id, slot_idx] = anchor
+                self.dynamic_shape_params[env_id, slot_idx] = shape_params
+                self.dynamic_phase[env_id, slot_idx] = phase
+                self.dynamic_phase_speed[env_id, slot_idx] = phase_speed
+                self.dynamic_local_pos[env_id, slot_idx] = pos[0]
+                self.dynamic_velocity_vectors[env_id, slot_idx] = vel[0]
+
+        self._refresh_motion_counts(env_ids)
 
     def _activate_dynamic_slot(
         self,
@@ -1167,6 +1450,10 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
     def _reset_dynamic_obstacles(self, env_ids):
         if self.dynamic_obs_count == 0 or len(env_ids) == 0:
             return
+        if self._uses_precomputed_dynamic_trajectories():
+            self._generate_precomputed_dynamic_trajectories(env_ids)
+            self._sync_dynamic_root_states(env_ids)
+            return
         low_count, high_count = self._dynamic_count_range()
         self.dynamic_active_mask[env_ids] = False
         self.dynamic_motion_types[env_ids] = -1
@@ -1195,32 +1482,44 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
 
         self._refresh_motion_counts(env_ids)
 
+        self._sync_dynamic_root_states(env_ids)
+
+    def _sync_dynamic_root_states(self, env_ids=None):
+        if self.dynamic_obs_count == 0:
+            return
+        if env_ids is None:
+            env_ids = torch.arange(self.num_envs, device=self.device)
+        if len(env_ids) == 0:
+            return
         world_xy = self.room_origins[env_ids].unsqueeze(1) + self.dynamic_local_pos[env_ids]
         self.dynamic_root_states[env_ids, :, 0:2] = world_xy
         self.dynamic_root_states[env_ids, :, 2] = self._dynamic_cfg().size[2] * 0.5
         self.dynamic_root_states[env_ids, :, 3:7] = 0.0
         self.dynamic_root_states[env_ids, :, 6] = 1.0
-        self.dynamic_root_states[env_ids, :, 7:10] = 0.0
+        self.dynamic_root_states[env_ids, :, 7:9] = self.dynamic_velocity_vectors[env_ids]
+        self.dynamic_root_states[env_ids, :, 9] = 0.0
+        self.dynamic_root_states[env_ids, :, 10:13] = 0.0
         inactive = ~self.dynamic_active_mask[env_ids]
         if inactive.any():
-            far_x = self.room_origins[env_ids, 0].unsqueeze(1).expand_as(
-                self.dynamic_root_states[env_ids, :, 0]
-            ) + 20.0
-            far_y = self.room_origins[env_ids, 1].unsqueeze(1).expand_as(
-                self.dynamic_root_states[env_ids, :, 1]
-            ) + 20.0
+            far_x_value = self.terrain.env_length * self.cfg.terrain.num_rows + 50.0
+            far_y_value = self.terrain.env_width * self.cfg.terrain.num_cols + 50.0
+            far_x = torch.full_like(self.dynamic_root_states[env_ids, :, 0], far_x_value)
+            far_y = torch.full_like(self.dynamic_root_states[env_ids, :, 1], far_y_value)
+            far_z = torch.full_like(self.dynamic_root_states[env_ids, :, 2], -10.0)
             self.dynamic_root_states[env_ids, :, 0] = torch.where(
                 inactive, far_x, self.dynamic_root_states[env_ids, :, 0]
             )
             self.dynamic_root_states[env_ids, :, 1] = torch.where(
                 inactive, far_y, self.dynamic_root_states[env_ids, :, 1]
             )
+            self.dynamic_root_states[env_ids, :, 2] = torch.where(
+                inactive, far_z, self.dynamic_root_states[env_ids, :, 2]
+            )
             self.dynamic_root_states[env_ids, :, 7:10] = torch.where(
                 inactive.unsqueeze(-1),
                 torch.zeros_like(self.dynamic_root_states[env_ids, :, 7:10]),
                 self.dynamic_root_states[env_ids, :, 7:10],
             )
-        self.dynamic_root_states[env_ids, :, 10:13] = 0.0
         self._set_dynamic_root_states(env_ids)
 
     def _reset_root_states(self, env_ids):
@@ -1341,6 +1640,15 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
                 dim=1,
             ),
         )
+        step_mask = (self.episode_length_buf <= 1)[:, None]
+        self.replay_dynamic_traj_step = torch.where(
+            step_mask,
+            torch.stack([self.dynamic_traj_step] * self.replay_len, dim=1),
+            torch.cat(
+                [self.replay_dynamic_traj_step[:, 1:], self.dynamic_traj_step.unsqueeze(1)],
+                dim=1,
+            ),
+        )
 
     def _reset_collision_replay(self, env_ids):
         undo_range = getattr(self.cfg.replay, "undo_steps_range", [40, 80])
@@ -1392,6 +1700,9 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.dynamic_active_mask[replay_ids] = self.replay_dynamic_active_mask[
             replay_ids, indices
         ]
+        self.dynamic_traj_step[replay_ids] = self.replay_dynamic_traj_step[
+            replay_ids, indices
+        ]
         self._set_robot_root_states(replay_ids)
         robot_actor_indices_int32 = self.robot_actor_indices[replay_ids].to(dtype=torch.int32)
         self.gym.set_dof_state_tensor_indexed(
@@ -1406,7 +1717,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         enable_collision = getattr(self.cfg.replay, "enable_collision_replay", False)
         enable_near_miss = getattr(self.cfg.replay, "enable_near_miss_replay", False)
         is_collision = self.collision_occurred[env_ids]
-        is_near_miss = self.near_miss_event[env_ids]
+        is_near_miss = self.near_miss_occurred[env_ids] | (self.near_miss_count[env_ids] > 0)
         is_success = self.goal_reached_flag[env_ids]
         is_timeout = self.time_out_buf[env_ids]
         prob_replay = getattr(self.cfg.replay, "replay_prob", 0.8)
@@ -1427,6 +1738,30 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         near_miss = self.near_miss_count[env_ids].float()
         min_ttc = self.min_ttc[env_ids]
         shield_rate = self.shield_intervention_rate[env_ids].clone()
+        dynamic_shield_rate = self.dynamic_cbf_intervention_rate[env_ids].clone()
+        shield_mean = self.shield_intervention_sum[env_ids] / torch.clamp(
+            self.episode_length_buf[env_ids].float(), min=1.0
+        )
+        dynamic_shield_mean = self.dynamic_cbf_intervention_sum[env_ids] / torch.clamp(
+            self.episode_length_buf[env_ids].float(), min=1.0
+        )
+        shield_step_rate = self.shield_intervention_steps[env_ids] / torch.clamp(
+            self.episode_length_buf[env_ids].float(), min=1.0
+        )
+        dynamic_shield_step_rate = self.dynamic_cbf_intervention_steps[env_ids] / torch.clamp(
+            self.episode_length_buf[env_ids].float(), min=1.0
+        )
+        reset_goal = self.reset_goal[env_ids].float()
+        reset_stand_still = self.reset_stand_still[env_ids].float()
+        reset_timeout = self.reset_timeout[env_ids].float()
+        reset_fall = self.reset_fall[env_ids].float()
+        reset_contact50 = self.reset_contact50[env_ids].float()
+        reset_initial_contact50 = self.reset_initial_contact50[env_ids].float()
+        reset_spawn_collision = self.reset_spawn_collision[env_ids].float()
+        reset_terminate_contact = self.reset_terminate_contact[env_ids].float()
+        reset_dynamic_collision = self.reset_dynamic_collision[env_ids].float()
+        active_dynamic_count = self.dynamic_active_mask[env_ids].sum(dim=1).float()
+        min_dynamic_clearance = self.min_dynamic_clearance[env_ids].clone()
         motion_counts = self.dynamic_motion_counts[env_ids].clone()
         safe_success = success * (total_collisions == 0).float()
 
@@ -1473,11 +1808,28 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.body_collision_event[env_ids] = False
         self.dynamic_collision_event[env_ids] = False
         self.near_miss_event[env_ids] = False
+        self.near_miss_occurred[env_ids] = False
         self.near_miss_count[env_ids] = 0
         self.last_near_miss_active[env_ids] = False
         self.min_ttc[env_ids] = 10.0
         self.predicted_min_clearance[env_ids] = 5.0
+        self.min_dynamic_clearance[env_ids] = 5.0
         self.shield_intervention_rate[env_ids] = 0.0
+        self.dynamic_cbf_intervention_rate[env_ids] = 0.0
+        self.shield_intervention_sum[env_ids] = 0.0
+        self.dynamic_cbf_intervention_sum[env_ids] = 0.0
+        self.shield_intervention_steps[env_ids] = 0.0
+        self.dynamic_cbf_intervention_steps[env_ids] = 0.0
+        self.prev_distance[env_ids] = self.distance[env_ids]
+        self.reset_goal[env_ids] = False
+        self.reset_stand_still[env_ids] = False
+        self.reset_timeout[env_ids] = False
+        self.reset_fall[env_ids] = False
+        self.reset_contact50[env_ids] = False
+        self.reset_initial_contact50[env_ids] = False
+        self.reset_spawn_collision[env_ids] = False
+        self.reset_terminate_contact[env_ids] = False
+        self.reset_dynamic_collision[env_ids] = False
 
         self.extras["episode"] = {}
         for key in self.episode_sums.keys():
@@ -1494,6 +1846,22 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.extras["episode"]["near_miss_count"] = torch.mean(near_miss)
         self.extras["episode"]["min_ttc"] = torch.mean(min_ttc)
         self.extras["episode"]["shield_intervention_rate"] = torch.mean(shield_rate)
+        self.extras["episode"]["shield_intervention_mean"] = torch.mean(shield_mean)
+        self.extras["episode"]["shield_intervention_step_rate"] = torch.mean(shield_step_rate)
+        self.extras["episode"]["active_dynamic_count"] = torch.mean(active_dynamic_count)
+        self.extras["episode"]["min_dynamic_clearance"] = torch.mean(min_dynamic_clearance)
+        self.extras["episode"]["dynamic_cbf_intervention_rate"] = torch.mean(dynamic_shield_rate)
+        self.extras["episode"]["dynamic_cbf_intervention_mean"] = torch.mean(dynamic_shield_mean)
+        self.extras["episode"]["dynamic_cbf_intervention_step_rate"] = torch.mean(dynamic_shield_step_rate)
+        self.extras["episode"]["reset_goal"] = torch.mean(reset_goal)
+        self.extras["episode"]["reset_stand_still"] = torch.mean(reset_stand_still)
+        self.extras["episode"]["reset_timeout"] = torch.mean(reset_timeout)
+        self.extras["episode"]["reset_fall"] = torch.mean(reset_fall)
+        self.extras["episode"]["reset_contact50"] = torch.mean(reset_contact50)
+        self.extras["episode"]["reset_initial_contact50"] = torch.mean(reset_initial_contact50)
+        self.extras["episode"]["reset_spawn_collision"] = torch.mean(reset_spawn_collision)
+        self.extras["episode"]["reset_terminate_contact"] = torch.mean(reset_terminate_contact)
+        self.extras["episode"]["reset_dynamic_collision"] = torch.mean(reset_dynamic_collision)
         self.extras["episode"]["episode_duration"] = torch.mean(episode_len_s)
         if torch.any(success > 0):
             self.extras["episode"]["time_to_goal"] = torch.mean(episode_len_s[success > 0])
@@ -1549,6 +1917,19 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
     def _update_dynamic_obstacles(self):
         if self.dynamic_obs_count == 0:
             return
+        if self._uses_precomputed_dynamic_trajectories():
+            self.dynamic_traj_step = torch.clamp(
+                self.dynamic_traj_step + 1, max=self._trajectory_len() - 1
+            )
+            batch = torch.arange(self.num_envs, device=self.device)
+            self.dynamic_local_pos[:] = self.dynamic_traj_pos[
+                batch, :, self.dynamic_traj_step
+            ]
+            self.dynamic_velocity_vectors[:] = self.dynamic_traj_vel[
+                batch, :, self.dynamic_traj_step
+            ]
+            self._sync_dynamic_root_states()
+            return
         active_env_ids = torch.arange(self.num_envs, device=self.device)
         for env_idx in active_env_ids.tolist():
             for slot_idx in range(self.dynamic_obs_count):
@@ -1564,33 +1945,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
                     )
                     self._update_slot_pose_from_state(env_idx, slot_idx)
 
-        world_xy = self.room_origins.unsqueeze(1) + self.dynamic_local_pos
-        self.dynamic_root_states[:, :, 0:2] = world_xy
-        self.dynamic_root_states[:, :, 2] = self._dynamic_cfg().size[2] * 0.5
-        self.dynamic_root_states[:, :, 3:7] = 0.0
-        self.dynamic_root_states[:, :, 6] = 1.0
-        self.dynamic_root_states[:, :, 7:10] = 0.0
-        self.dynamic_root_states[:, :, 10:13] = 0.0
-        inactive = ~self.dynamic_active_mask
-        if inactive.any():
-            far_x = self.room_origins[:, 0].unsqueeze(1).expand_as(
-                self.dynamic_root_states[:, :, 0]
-            ) + 20.0
-            far_y = self.room_origins[:, 1].unsqueeze(1).expand_as(
-                self.dynamic_root_states[:, :, 1]
-            ) + 20.0
-            self.dynamic_root_states[:, :, 0] = torch.where(
-                inactive, far_x, self.dynamic_root_states[:, :, 0]
-            )
-            self.dynamic_root_states[:, :, 1] = torch.where(
-                inactive, far_y, self.dynamic_root_states[:, :, 1]
-            )
-            self.dynamic_root_states[:, :, 7:10] = torch.where(
-                inactive.unsqueeze(-1),
-                torch.zeros_like(self.dynamic_root_states[:, :, 7:10]),
-                self.dynamic_root_states[:, :, 7:10],
-            )
-        self._set_dynamic_root_states(active_env_ids)
+        self._sync_dynamic_root_states(active_env_ids)
 
     def _post_physics_step_callback(self):
         contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
@@ -1600,8 +1955,12 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.update_percetion()
 
     def update_percetion(self):
+        previous_distance = self.distance.clone()
         self.distance = torch.norm(
             self.position_targets[:, :2] - self.root_states[:, :2], dim=1
+        )
+        self.prev_distance = torch.where(
+            self.episode_length_buf <= 1, self.distance, previous_distance
         )
         self.far_goal = self.distance > 0.5
         self._get_rays()
@@ -1611,8 +1970,46 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
                 self.nav_actions_after_clip - self.nav_actions_orig, dim=-1
             )
             self.shield_intervention_rate = intervention
+            active_step = (self.episode_length_buf > 1).float()
+            self.shield_intervention_sum += intervention * active_step
+            self.shield_intervention_steps += (intervention > 1e-3).float() * active_step
+            if self.dynamic_obs_count > 0:
+                rel_pos = self.dynamic_root_states[:, :, :2] - self.root_states[:, None, :2]
+                rel_vel = self.dynamic_velocity_vectors - self.nav_actions_after_clip[:, None, :2]
+                rel_speed_sq = (rel_vel ** 2).sum(dim=-1).clamp(min=1e-6)
+                closing = -(rel_pos * rel_vel).sum(dim=-1)
+                ttc = torch.where(closing > 0.0, closing / rel_speed_sq, torch.full_like(closing, 10.0))
+                ttc = torch.where(self.dynamic_active_mask, ttc, torch.full_like(ttc, 10.0))
+                dynamic_intervention = torch.where(
+                    ttc.min(dim=-1).values < self.cfg.rewards.ttc_risk_config.threshold,
+                    intervention,
+                    torch.zeros_like(intervention),
+                )
+                self.dynamic_cbf_intervention_rate = dynamic_intervention
+                self.dynamic_cbf_intervention_sum += dynamic_intervention * active_step
+                self.dynamic_cbf_intervention_steps += (dynamic_intervention > 1e-3).float() * active_step
+            else:
+                self.dynamic_cbf_intervention_rate[:] = 0.0
 
     def _predict_local_positions(self, horizon):
+        if self._uses_precomputed_dynamic_trajectories():
+            offset = int(round(float(horizon) / max(self.dt, 1e-6)))
+            pred_step = torch.clamp(
+                self.dynamic_traj_step + offset,
+                min=0,
+                max=self._trajectory_len() - 1,
+            )
+            batch = torch.arange(self.num_envs, device=self.device)
+            local_pos = self.dynamic_traj_pos[batch, :, pred_step]
+            velocity = self.dynamic_traj_vel[batch, :, pred_step]
+            far_local = torch.ones_like(local_pos) * 20.0
+            local_pos = torch.where(self.dynamic_active_mask.unsqueeze(-1), local_pos, far_local)
+            velocity = torch.where(
+                self.dynamic_active_mask.unsqueeze(-1),
+                velocity,
+                torch.zeros_like(velocity),
+            )
+            return local_pos, velocity
         local_pos = self.dynamic_local_pos.clone()
         velocity = self.dynamic_velocity_vectors.clone()
         if self.dynamic_obs_count == 0:
@@ -1974,16 +2371,30 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
             self.distance < self.cfg.rewards.reach_pos_target_tight_config.distance_threshold
         )
 
-        self.terminate_buf = torch.any(
+        terminate_contact_now = torch.any(
             torch.norm(self.contact_forces[:, self.termination_contact_indices, :2], dim=-1)
             > 1.0,
             dim=1,
         )
-        self.terminate_buf &= ~self.initial_
+        self.terminate_buf = terminate_contact_now & (~self.initial_)
         self.reset_buf = self.terminate_buf.clone()
-        self.reset_buf |= torch.any(
-            torch.norm(self.contact_forces[:, :, :2], dim=-1) > 50.0, dim=1
-        )
+
+        if self.termination_contact_indices.numel() > 0:
+            hard_contact_now = torch.any(
+                torch.norm(
+                    self.contact_forces[:, self.termination_contact_indices, :2], dim=-1
+                )
+                > 50.0,
+                dim=1,
+            )
+        else:
+            hard_contact_now = torch.zeros(
+                self.num_envs, device=self.device, dtype=torch.bool
+            )
+        warmup_steps = int(getattr(self.cfg.env, "hard_contact_warmup_steps", 10))
+        hard_contact_ready = self.episode_length_buf > warmup_steps
+        hard_contact_reset = hard_contact_now & hard_contact_ready
+        self.reset_buf |= hard_contact_reset
         if self.initial_.any():
             self._check_spawn_collision()
         self.extras["bad_masks"] = self.initial_
@@ -2007,6 +2418,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
                 dist,
                 torch.full_like(dist, 100.0),
             )
+            self.min_dynamic_clearance = dist.min(dim=1).values - self.dynamic_radius
             dynamic_collision_now = torch.any(
                 dist < self.cfg.rewards.dynamic_collision_config.threshold, dim=1
             )
@@ -2017,6 +2429,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
                 self.dynamic_collision_count,
             )
         else:
+            self.min_dynamic_clearance[:] = 5.0
             self.dynamic_collision_event = torch.zeros(
                 self.num_envs, device=self.device, dtype=torch.bool
             )
@@ -2029,6 +2442,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         ) & (~self.initial_)
         near_miss_onset = near_miss_now & (~self.last_near_miss_active)
         self.near_miss_event = near_miss_now
+        self.near_miss_occurred |= near_miss_now
         self.near_miss_count += near_miss_onset.long()
         self.last_near_miss_active = near_miss_now
 
@@ -2039,9 +2453,13 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         if torch.any(body_collision_now):
             self._update_collision_hist(body_collision_now)
 
+        dynamic_collision_reset = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.bool
+        )
         if self.cfg.rewards.dynamic_collision_config.early_reset:
-            self.reset_buf |= self.dynamic_collision_event
-            self.terminate_buf |= self.dynamic_collision_event
+            dynamic_collision_reset = self.dynamic_collision_event
+            self.reset_buf |= dynamic_collision_reset
+            self.terminate_buf |= dynamic_collision_reset
 
         self.time_out_buf = self.episode_length_buf > self.max_episode_length
         self.fall_down = self.projected_gravity[:, 2] > -0.8
@@ -2064,6 +2482,21 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.reset_buf |= self.stand_still_flag
         self.reset_buf |= self.time_out_buf
         self.reset_buf |= self.fall_down
+
+        self.reset_goal = self.goal_reached_flag.clone()
+        self.reset_stand_still = self.stand_still_flag.clone()
+        self.reset_timeout = self.time_out_buf.clone()
+        self.reset_fall = self.fall_down.clone()
+        self.reset_contact50 = hard_contact_reset.clone()
+        self.reset_initial_contact50 = hard_contact_now & (~hard_contact_ready)
+        self.reset_terminate_contact = self.terminate_buf & terminate_contact_now
+        self.reset_dynamic_collision = dynamic_collision_reset.clone()
+
+    def _reward_goal_progress(self):
+        cfg = getattr(self.cfg.rewards, "goal_progress_config", None)
+        max_progress = float(getattr(cfg, "max_progress", 0.25)) if cfg is not None else 0.25
+        progress = (self.prev_distance - self.distance).clip(min=-max_progress, max=max_progress)
+        return progress * (self.episode_length_buf > 1).float()
 
     def _reward_dynamic_collision(self):
         return self.dynamic_collision_event.float()

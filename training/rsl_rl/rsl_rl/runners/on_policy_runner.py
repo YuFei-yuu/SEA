@@ -28,6 +28,7 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
+import csv
 import time
 import os
 from collections import deque
@@ -84,10 +85,16 @@ class OnPolicyRunner:
                 obs_shape=[num_obs], action_shape=[num_nav_actions])
         
         self.log_dir = log_dir
+        self.metrics_path = None
+        self.metrics_header_written = False
         self.writer = None
         self.tot_timesteps = 0
         self.tot_time = 0
         self.current_learning_iteration = 0
+
+        if self.log_dir is not None:
+            os.makedirs(self.log_dir, exist_ok=True)
+            self.metrics_path = os.path.join(self.log_dir, 'train_metrics.csv')
 
         _, _ = self.env.reset()
     
@@ -153,6 +160,7 @@ class OnPolicyRunner:
                             config = config,
                     )
             if self.log_dir is not None and it % 10 == 0 and it > self.current_learning_iteration + 10:
+                self._append_metrics_row(locals())
                 if self.args.wandb:
                     self.wandb_log(locals())
                 else:
@@ -168,6 +176,44 @@ class OnPolicyRunner:
         self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(self.current_learning_iteration)))
 
     
+    def _append_metrics_row(self, locs):
+        if self.metrics_path is None or not len(locs['rewbuffer']) > 0:
+            return
+
+        row = {
+            'iteration': int(locs['it']),
+            'collection_time': float(locs['collection_time']),
+            'learn_time': float(locs['learn_time']),
+            'value_loss': float(locs['mean_value_loss']),
+            'surrogate_loss': float(locs['mean_surrogate_loss']),
+            'regularization_loss': float(locs['mean_regularization_loss']),
+            'smooth_loss': float(locs['mean_smooth_loss']),
+            'intervention_loss': float(locs['mean_interv_loss']),
+            'mean_reward': float(statistics.mean(locs['rewbuffer'])),
+            'mean_episode_length': float(statistics.mean(locs['lenbuffer'])),
+            'mean_num_sim': float(locs['mean_num_sim']),
+        }
+
+        if locs['ep_infos']:
+            for key in locs['ep_infos'][0]:
+                infotensor = torch.tensor([], device=self.device)
+                for ep_info in locs['ep_infos']:
+                    value = ep_info[key]
+                    if not isinstance(value, torch.Tensor):
+                        value = torch.Tensor([value])
+                    if len(value.shape) == 0:
+                        value = value.unsqueeze(0)
+                    infotensor = torch.cat((infotensor, value.to(self.device)))
+                row[key] = float(torch.mean(infotensor).item())
+
+        fieldnames = list(row.keys())
+        with open(self.metrics_path, 'a', newline='') as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            if not self.metrics_header_written or csv_file.tell() == 0:
+                writer.writeheader()
+                self.metrics_header_written = True
+            writer.writerow(row)
+
     def wandb_log(self, locs, width=80, pad=35):
         self.tot_timesteps += self.num_steps_per_env * self.env.num_envs
         self.tot_time += locs['collection_time'] + locs['learn_time']

@@ -3,7 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 import torch.nn.functional as F
 
-from .cbf_lse_layer import ExactLSECBFLayer
+from .cbf_lse_layer import DynamicTokenCBFLayer, ExactLSECBFLayer
 
 class DifferentiableSafeActorCritic(nn.Module):
     is_recurrent = False
@@ -93,6 +93,7 @@ class DifferentiableSafeActorCritic(nn.Module):
 
         # 4. Closed-form CBF Layer
         self.cbf_layer = ExactLSECBFLayer(num_rays=num_rays)
+        self.dynamic_cbf_layer = DynamicTokenCBFLayer()
 
         self.std = nn.Parameter(1.5 * torch.ones(num_actions))
 
@@ -152,11 +153,14 @@ class DifferentiableSafeActorCritic(nn.Module):
         alpha = F.softplus(alpha_raw)
         self.alpha = alpha 
         
-        # 4. Get u_s through differentiable safety layer
-        u_s = self.cbf_layer(u_bar, rays_real, alpha)
+        # 4. First shield static/ray obstacles, then apply velocity-aware dynamic CBF.
+        u_static_safe = self.cbf_layer(u_bar, rays_real, alpha)
+        base_vel = props[:, 6:8] if props.shape[-1] >= 8 else None
+        u_s = self.dynamic_cbf_layer(u_static_safe, dyn, base_vel, alpha)
         
         # Save u_bar and u_s for calculating Intervention Loss
         self.u_bar = u_bar
+        self.u_static_safe = u_static_safe
         self.u_s = u_s
         
         return u_s
