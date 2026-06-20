@@ -29,14 +29,25 @@
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
 import numpy as np
+import argparse
 import os
 import sys
+import subprocess
 from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry, helpers
 from legged_gym import LEGGED_GYM_ROOT_DIR, LEGGED_GYM_ENVS_DIR
 from datetime import datetime
 from legged_gym.envs.go2.go2_pos_config import Go2PosRoughCfg
 from legged_gym.utils.helpers import class_to_dict
+
+
+def parse_train_postprocess_args():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--analyze_after_train", action="store_true", default=False)
+    parser.add_argument("--eval_checkpoints_after_train", type=int, nargs="*", default=None)
+    known_args, remaining = parser.parse_known_args()
+    sys.argv = [sys.argv[0]] + remaining
+    return known_args
 
 def print_config():
     config = class_to_dict(Go2PosRoughCfg.rewards)
@@ -52,7 +63,48 @@ def train(args):
     env, env_cfg = task_registry.make_env(name=args.task, args=args)
     ppo_runner, train_cfg = task_registry.make_alg_runner(env=env, name=args.task, args=args)
     ppo_runner.learn(num_learning_iterations=train_cfg.runner.max_iterations, init_at_random_ep_len=True, config=config)
+    run_dir = ppo_runner.log_dir
+    if run_dir is not None and getattr(args, "analyze_after_train", False):
+        analyze_script = os.path.join(
+            LEGGED_GYM_ROOT_DIR,
+            "legged_gym",
+            "scripts",
+            "analyze_dynamic_training.py",
+        )
+        subprocess.run(
+            [sys.executable, analyze_script, "--run_dir", run_dir],
+            check=False,
+        )
+
+    eval_checkpoints = getattr(args, "eval_checkpoints_after_train", None)
+    if run_dir is not None and eval_checkpoints:
+        eval_script = os.path.join(
+            LEGGED_GYM_ROOT_DIR,
+            "legged_gym",
+            "scripts",
+            "evaluate_checkpoints.py",
+        )
+        load_run = os.path.basename(run_dir)
+        subprocess.run(
+            [
+                sys.executable,
+                eval_script,
+                "--task",
+                args.task,
+                "--load_run",
+                load_run,
+                "--checkpoints",
+                *[str(checkpoint) for checkpoint in eval_checkpoints],
+                "--num_episodes",
+                "50",
+                "--headless",
+            ],
+            check=False,
+        )
     
 if __name__ == '__main__':
+    postprocess_args = parse_train_postprocess_args()
     args = get_args()
+    args.analyze_after_train = postprocess_args.analyze_after_train
+    args.eval_checkpoints_after_train = postprocess_args.eval_checkpoints_after_train
     train(args)

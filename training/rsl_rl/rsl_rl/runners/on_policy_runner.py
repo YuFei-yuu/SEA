@@ -180,8 +180,14 @@ class OnPolicyRunner:
         if self.metrics_path is None or not len(locs['rewbuffer']) > 0:
             return
 
+        iteration_time = locs['collection_time'] + locs['learn_time']
+        samples_per_iter = self.num_steps_per_env * self.env.num_envs
+        fps = samples_per_iter / max(iteration_time, 1e-6)
+        mean_action_std = float(self.alg.actor_critic.std.mean().detach().cpu().item())
         row = {
             'iteration': int(locs['it']),
+            'timesteps': int((locs['it'] + 1) * samples_per_iter),
+            'fps': float(fps),
             'collection_time': float(locs['collection_time']),
             'learn_time': float(locs['learn_time']),
             'value_loss': float(locs['mean_value_loss']),
@@ -189,6 +195,7 @@ class OnPolicyRunner:
             'regularization_loss': float(locs['mean_regularization_loss']),
             'smooth_loss': float(locs['mean_smooth_loss']),
             'intervention_loss': float(locs['mean_interv_loss']),
+            'mean_action_std': mean_action_std,
             'mean_reward': float(statistics.mean(locs['rewbuffer'])),
             'mean_episode_length': float(statistics.mean(locs['lenbuffer'])),
             'mean_num_sim': float(locs['mean_num_sim']),

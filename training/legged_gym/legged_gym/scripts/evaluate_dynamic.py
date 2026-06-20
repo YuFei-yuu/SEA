@@ -3,6 +3,7 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 import argparse
+import csv
 import os
 import sys
 
@@ -26,10 +27,14 @@ DYNAMIC_TASKS = {
 def _parse_eval_args():
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--num_episodes", type=int, default=50)
+    parser.add_argument("--output_csv", type=str, default=None)
+    parser.add_argument("--output_summary", type=str, default=None)
     known_args, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0]] + remaining
     base_args = get_args()
     base_args.num_episodes = known_args.num_episodes
+    base_args.output_csv = known_args.output_csv
+    base_args.output_summary = known_args.output_summary
     return base_args
 
 
@@ -86,6 +91,26 @@ def _scalar(value):
     if isinstance(value, torch.Tensor):
         return float(value.detach().cpu().item())
     return float(value)
+
+
+def _write_summary_files(summary, output_csv=None, output_summary=None):
+    if output_csv is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(output_csv)), exist_ok=True)
+        write_header = not os.path.isfile(output_csv) or os.path.getsize(output_csv) == 0
+        with open(output_csv, "a", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=list(summary.keys()))
+            if write_header:
+                writer.writeheader()
+            writer.writerow(summary)
+
+    if output_summary is not None:
+        os.makedirs(os.path.dirname(os.path.abspath(output_summary)), exist_ok=True)
+        with open(output_summary, "w", encoding="utf-8") as f:
+            for key, value in summary.items():
+                if isinstance(value, float):
+                    f.write(f"{key}: {value:.4f}\n")
+                else:
+                    f.write(f"{key}: {value}\n")
 
 
 def evaluate(args):
@@ -180,27 +205,47 @@ def evaluate(args):
         values = stats[key]
         return sum(values) / len(values) if values else 0.0
 
+    mean_time_to_goal = (
+        sum(stats["time_to_goal"]) / len(stats["time_to_goal"])
+        if stats["time_to_goal"]
+        else 0.0
+    )
+    summary = {
+        "task": args.task,
+        "load_run": args.load_run if args.load_run is not None else "",
+        "checkpoint": int(args.checkpoint) if args.checkpoint is not None else -1,
+        "checkpoint_path": loaded_path,
+        "seed": int(args.seed) if args.seed is not None else -1,
+        "num_episodes": int(args.num_episodes),
+        "success_rate": mean("success"),
+        "safe_success_rate": mean("safe_success"),
+        "avg_total_collision_count": mean("total_collision_count"),
+        "avg_dynamic_collision_count": mean("dynamic_collision_count"),
+        "avg_body_collision_count": mean("body_collision_count"),
+        "avg_near_miss_count": mean("near_miss_count"),
+        "avg_min_ttc": mean("min_ttc"),
+        "avg_shield_intervention_rate": mean("shield_intervention_rate"),
+        "avg_active_dynamic_count": mean("active_dynamic_count"),
+        "avg_min_dynamic_clearance": mean("min_dynamic_clearance"),
+        "avg_dynamic_cbf_intervention_rate": mean("dynamic_cbf_intervention_rate"),
+        "timeout_rate": mean("timeout"),
+        "mean_episode_duration": mean("episode_duration"),
+        "mean_time_to_goal": mean_time_to_goal,
+    }
+
     print("\nEvaluation summary")
-    print(f"task: {args.task}")
-    print(f"checkpoint_path: {loaded_path}")
-    print(f"seed: {args.seed}")
-    print(f"num_episodes: {args.num_episodes}")
-    print(f"success_rate: {mean('success'):.4f}")
-    print(f"safe_success_rate: {mean('safe_success'):.4f}")
-    print(f"avg_total_collision_count: {mean('total_collision_count'):.4f}")
-    print(f"avg_dynamic_collision_count: {mean('dynamic_collision_count'):.4f}")
-    print(f"avg_body_collision_count: {mean('body_collision_count'):.4f}")
-    print(f"avg_near_miss_count: {mean('near_miss_count'):.4f}")
-    print(f"avg_min_ttc: {mean('min_ttc'):.4f}")
-    print(f"avg_shield_intervention_rate: {mean('shield_intervention_rate'):.4f}")
-    print(f"avg_active_dynamic_count: {mean('active_dynamic_count'):.4f}")
-    print(f"avg_min_dynamic_clearance: {mean('min_dynamic_clearance'):.4f}")
-    print(f"avg_dynamic_cbf_intervention_rate: {mean('dynamic_cbf_intervention_rate'):.4f}")
-    print(f"timeout_rate: {mean('timeout'):.4f}")
-    if stats["time_to_goal"]:
-        print(f"mean_time_to_goal: {sum(stats['time_to_goal']) / len(stats['time_to_goal']):.4f}")
-    else:
-        print("mean_time_to_goal: 0.0000")
+    for key, value in summary.items():
+        if isinstance(value, float):
+            print(f"{key}: {value:.4f}")
+        else:
+            print(f"{key}: {value}")
+
+    _write_summary_files(
+        summary,
+        output_csv=getattr(args, "output_csv", None),
+        output_summary=getattr(args, "output_summary", None),
+    )
+    return summary
 
 
 if __name__ == "__main__":
