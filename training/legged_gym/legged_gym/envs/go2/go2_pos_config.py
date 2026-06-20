@@ -411,7 +411,7 @@ class Go2PosDynamicComplexCfg(Go2PosDynamicBaseCfg):
     class env(Go2PosDynamicBaseCfg.env):
         num_envs = 384
         episode_length_s = 45
-        goal_reached_time = 20
+        goal_reached_time = 12
         hard_contact_warmup_steps = 10
 
     class terrain(Go2PosDynamicBaseCfg.terrain):
@@ -451,11 +451,51 @@ class Go2PosDynamicComplexCfg(Go2PosDynamicBaseCfg):
     class rewards(Go2PosDynamicBaseCfg.rewards):
         class scales(Go2PosDynamicBaseCfg.rewards.scales):
             goal_progress = 6.0
+            reach_pos_target_tight = 15.0
+            near_goal_radial_reward = 4.0
+            negative_progress_penalty = -5.0
+            near_goal_orbit_penalty = -4.0
+            near_goal_command_penalty = -2.0
+            near_goal_stop_reward = 4.0
             ttc_risk = -0.8
             near_miss = -0.3
+            dynamic_avoid_direction_reward = 1.0
 
         class goal_progress_config:
             max_progress = 0.25
+
+        class near_goal_radial_reward_config:
+            near_goal_distance = 1.6
+            target_speed_scale = 0.8
+            target_speed_max = 0.45
+
+        class negative_progress_penalty_config:
+            near_goal_distance = 1.8
+            max_negative_progress = 0.30
+
+        class near_goal_orbit_penalty_config:
+            near_goal_distance = 1.6
+            tangential_speed_threshold = 0.08
+            radial_speed_deadband = 0.18
+            radial_deficit_weight = 0.5
+
+        class near_goal_command_penalty_config:
+            near_goal_distance = 1.6
+            target_speed_scale = 0.65
+            target_speed_min = 0.05
+            target_speed_max = 0.45
+            tangential_weight = 0.7
+            wrong_way_weight = 1.0
+
+        class near_goal_stop_reward_config:
+            near_goal_distance = 0.7
+            speed_threshold = 0.35
+            yaw_rate_threshold = 0.60
+
+        class dynamic_avoid_direction_reward_config:
+            ttc_threshold = 1.2
+            min_lateral_speed = 0.03
+            min_obstacle_speed = 0.05
 
         class close_obst_vel_config(Go2PosDynamicBaseCfg.rewards.close_obst_vel_config):
             safe_vel_max = 0.45
@@ -509,6 +549,11 @@ class Go2PosDynamic3CfgPPO(Go2PosRoughCfgPPO):
 
 
 class Go2PosDynamicComplexCfgPPO(Go2PosRoughCfgPPO):
+    class policy(Go2PosRoughCfgPPO.policy):
+        dynamic_cbf_default_safe_radius = 0.65
+        dynamic_cbf_safety_margin = 0.35
+        dynamic_cbf_damping_factor = 1.0
+
     class runner(Go2PosRoughCfgPPO.runner):
         run_name = ''
         experiment_name = 'Go2_pos_dynamic_complex'

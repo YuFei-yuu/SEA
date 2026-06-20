@@ -115,6 +115,15 @@ class OnPolicyRunner:
         lenbuffer = deque(maxlen=100)
         cur_reward_sum = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
         cur_episode_length = torch.zeros(self.env.num_envs, dtype=torch.float, device=self.device)
+        action_diag_keys = [
+            "ubar_goal_angle",
+            "ustatic_goal_angle",
+            "usafe_goal_angle",
+            "ubar_norm",
+            "usafe_norm",
+        ]
+        action_diag_sums = {key: 0.0 for key in action_diag_keys}
+        action_diag_count = 0
         
         tot_iter = self.current_learning_iteration + num_learning_iterations
         # self.num_steps_per_env = 1
@@ -124,6 +133,13 @@ class OnPolicyRunner:
             with torch.no_grad():
                 for i in range(self.num_steps_per_env):
                     actions = self.alg.act(obs, critic_obs)
+                    diagnostics = getattr(self.alg.actor_critic, "diagnostics", {})
+                    if diagnostics:
+                        for key in action_diag_keys:
+                            value = diagnostics.get(key, None)
+                            if value is not None:
+                                action_diag_sums[key] += float(value.mean().detach().cpu().item())
+                        action_diag_count += 1
                     obs, privileged_obs, rewards, dones, infos = self.env.step(actions)
                     critic_obs = privileged_obs if privileged_obs is not None else obs
                     obs, critic_obs, rewards, dones = obs.to(self.device), critic_obs.to(self.device), rewards.to(self.device), dones.to(self.device)
@@ -143,6 +159,12 @@ class OnPolicyRunner:
                 stop = time.time()
                 collection_time = stop - start
                 mean_num_sim /= (self.num_steps_per_env)
+                action_diagnostics = {
+                    key: action_diag_sums[key] / max(action_diag_count, 1)
+                    for key in action_diag_keys
+                }
+                action_diag_sums = {key: 0.0 for key in action_diag_keys}
+                action_diag_count = 0
 
                 # Learning step
                 start = stop
@@ -200,6 +222,8 @@ class OnPolicyRunner:
             'mean_episode_length': float(statistics.mean(locs['lenbuffer'])),
             'mean_num_sim': float(locs['mean_num_sim']),
         }
+        for key, value in locs.get('action_diagnostics', {}).items():
+            row[key] = float(value)
 
         if locs['ep_infos']:
             for key in locs['ep_infos'][0]:

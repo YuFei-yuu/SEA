@@ -257,10 +257,11 @@ python training/legged_gym/legged_gym/scripts/train.py \
 | PPO 优化指标 | `value_loss`, `surrogate_loss`, `regularization_loss`, `smooth_loss`, `intervention_loss` |
 | 成功率 | `success`, `safe_success`, `timeout`, `time_to_goal` |
 | 安全事件 | `dynamic_collision_count`, `body_collision_count`, `total_collision_count`, `near_miss_count` |
-| 动态风险 | `min_ttc`, `min_dynamic_clearance`, `active_dynamic_count` |
+| 动态风险 | `min_ttc`, `min_dynamic_clearance`, `future_dynamic_clearance`, `active_dynamic_count`, `pass_behind_score` |
 | CBF 介入 | `shield_intervention_rate`, `shield_intervention_step_rate`, `dynamic_cbf_intervention_rate` |
+| 动作诊断 | `ubar_goal_angle`, `ustatic_goal_angle`, `usafe_goal_angle`, `ubar_norm`, `usafe_norm` |
 | reset 原因 | `reset_goal`, `reset_timeout`, `reset_contact50`, `reset_dynamic_collision` 等 |
-| reward 分项 | 所有 `rew_*` 字段 |
+| reward 分项 | 所有 `rew_*` 字段，包括近目标径向收敛、命令限速、绕圈惩罚和动态让行方向奖励 |
 
 ### 2. 对已有 run 生成训练报告
 
@@ -291,6 +292,8 @@ training/legged_gym/logs/Go2_pos_dynamic_complex/<run>/analysis/
 | `rl_optimization.png` | value/surrogate/intervention/action std |
 | `safety_events.png` | collision、near-miss |
 | `safety_clearance_ttc.png` | TTC、动态余量、动态障碍数量 |
+| `dynamic_direction.png` | pass-behind 得分和未来动态余量 |
+| `action_goal_alignment.png` | `u_bar/u_static_safe/u_s` 与目标方向夹角、速度模长 |
 | `cbf_intervention.png` | safety layer 介入强度 |
 | `reset_reasons_stacked.png` | reset 原因堆叠图 |
 | `reward_breakdown.png` | reward 分项贡献 |
@@ -353,6 +356,7 @@ python training/legged_gym/legged_gym/scripts/evaluate_checkpoints.py \
 | `eval_checkpoints_summary.md` | checkpoint 排名和推荐 |
 | `eval_success_collision_bars.png` | success/collision 柱状图 |
 | `eval_safety_metrics_bars.png` | near-miss/TTC/clearance/CBF 柱状图 |
+| `eval_dynamic_direction_bars.png` | pass-behind 和动态余量柱状图 |
 | `eval_efficiency_bars.png` | timeout/duration/time-to-goal 柱状图 |
 
 推荐模型排序逻辑：

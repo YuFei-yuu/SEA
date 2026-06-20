@@ -141,6 +141,8 @@ def evaluate(args):
         "shield_intervention_rate": [],
         "active_dynamic_count": [],
         "min_dynamic_clearance": [],
+        "future_dynamic_clearance": [],
+        "pass_behind_score": [],
         "dynamic_cbf_intervention_rate": [],
         "timeout": [],
         "episode_duration": [],
@@ -168,6 +170,10 @@ def evaluate(args):
             )
             active_dynamic_count = _scalar(episode_info.get("active_dynamic_count", 0.0))
             min_dynamic_clearance = _scalar(episode_info.get("min_dynamic_clearance", 0.0))
+            future_dynamic_clearance = _scalar(
+                episode_info.get("future_dynamic_clearance", 0.0)
+            )
+            pass_behind_score = _scalar(episode_info.get("pass_behind_score", 0.0))
             dynamic_cbf_intervention_rate = _scalar(
                 episode_info.get("dynamic_cbf_intervention_rate", 0.0)
             )
@@ -185,6 +191,8 @@ def evaluate(args):
             stats["shield_intervention_rate"].append(shield_intervention_rate)
             stats["active_dynamic_count"].append(active_dynamic_count)
             stats["min_dynamic_clearance"].append(min_dynamic_clearance)
+            stats["future_dynamic_clearance"].append(future_dynamic_clearance)
+            stats["pass_behind_score"].append(pass_behind_score)
             stats["dynamic_cbf_intervention_rate"].append(dynamic_cbf_intervention_rate)
             stats["timeout"].append(timeout)
             stats["episode_duration"].append(episode_duration)
@@ -198,6 +206,7 @@ def evaluate(args):
                 f"dyn_col={dynamic_collision_count:.2f} body_col={body_collision_count:.2f} "
                 f"near_miss={near_miss_count:.2f} min_ttc={min_ttc:.2f} "
                 f"active_dyn={active_dynamic_count:.1f} min_dyn_clear={min_dynamic_clearance:.2f} "
+                f"future_clear={future_dynamic_clearance:.2f} pass_score={pass_behind_score:.2f} "
                 f"total_col={total_collision_count:.2f} timeout={timeout:.0f} duration={episode_duration:.2f}s"
             )
 
@@ -227,6 +236,8 @@ def evaluate(args):
         "avg_shield_intervention_rate": mean("shield_intervention_rate"),
         "avg_active_dynamic_count": mean("active_dynamic_count"),
         "avg_min_dynamic_clearance": mean("min_dynamic_clearance"),
+        "avg_future_dynamic_clearance": mean("future_dynamic_clearance"),
+        "avg_pass_behind_score": mean("pass_behind_score"),
         "avg_dynamic_cbf_intervention_rate": mean("dynamic_cbf_intervention_rate"),
         "timeout_rate": mean("timeout"),
         "mean_episode_duration": mean("episode_duration"),

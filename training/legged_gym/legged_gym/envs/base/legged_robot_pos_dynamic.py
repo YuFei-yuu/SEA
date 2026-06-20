@@ -732,6 +732,9 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.min_dynamic_clearance = torch.full(
             (self.num_envs,), 5.0, device=self.device, dtype=torch.float
         )
+        self.pass_behind_score = torch.zeros(
+            self.num_envs, device=self.device, dtype=torch.float
+        )
         self.shield_intervention_rate = torch.zeros(
             self.num_envs, device=self.device, dtype=torch.float
         )
@@ -1762,6 +1765,8 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         reset_dynamic_collision = self.reset_dynamic_collision[env_ids].float()
         active_dynamic_count = self.dynamic_active_mask[env_ids].sum(dim=1).float()
         min_dynamic_clearance = self.min_dynamic_clearance[env_ids].clone()
+        future_dynamic_clearance = self.predicted_min_clearance[env_ids].clone()
+        pass_behind_score = self.pass_behind_score[env_ids].clone()
         motion_counts = self.dynamic_motion_counts[env_ids].clone()
         safe_success = success * (total_collisions == 0).float()
 
@@ -1814,6 +1819,7 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.min_ttc[env_ids] = 10.0
         self.predicted_min_clearance[env_ids] = 5.0
         self.min_dynamic_clearance[env_ids] = 5.0
+        self.pass_behind_score[env_ids] = 0.0
         self.shield_intervention_rate[env_ids] = 0.0
         self.dynamic_cbf_intervention_rate[env_ids] = 0.0
         self.shield_intervention_sum[env_ids] = 0.0
@@ -1850,6 +1856,8 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.extras["episode"]["shield_intervention_step_rate"] = torch.mean(shield_step_rate)
         self.extras["episode"]["active_dynamic_count"] = torch.mean(active_dynamic_count)
         self.extras["episode"]["min_dynamic_clearance"] = torch.mean(min_dynamic_clearance)
+        self.extras["episode"]["future_dynamic_clearance"] = torch.mean(future_dynamic_clearance)
+        self.extras["episode"]["pass_behind_score"] = torch.mean(pass_behind_score)
         self.extras["episode"]["dynamic_cbf_intervention_rate"] = torch.mean(dynamic_shield_rate)
         self.extras["episode"]["dynamic_cbf_intervention_mean"] = torch.mean(dynamic_shield_mean)
         self.extras["episode"]["dynamic_cbf_intervention_step_rate"] = torch.mean(dynamic_shield_step_rate)
@@ -2497,6 +2505,106 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         max_progress = float(getattr(cfg, "max_progress", 0.25)) if cfg is not None else 0.25
         progress = (self.prev_distance - self.distance).clip(min=-max_progress, max=max_progress)
         return progress * (self.episode_length_buf > 1).float()
+
+    def _reward_near_goal_radial_reward(self):
+        cfg = self.cfg.rewards.near_goal_radial_reward_config
+        near_weight = ((cfg.near_goal_distance - self.distance) / cfg.near_goal_distance).clip(
+            min=0.0, max=1.0
+        )
+        goal_dir = self.goal_local_pos / (self.distance.unsqueeze(1) + 1e-4)
+        radial_speed = torch.sum(self.base_lin_vel[:, :2] * goal_dir, dim=-1)
+        target_speed = (self.distance * cfg.target_speed_scale).clip(
+            min=0.0, max=cfg.target_speed_max
+        )
+        return torch.minimum(radial_speed.clip(min=0.0), target_speed) * near_weight
+
+    def _reward_negative_progress_penalty(self):
+        cfg = self.cfg.rewards.negative_progress_penalty_config
+        near_weight = ((cfg.near_goal_distance - self.distance) / cfg.near_goal_distance).clip(
+            min=0.0, max=1.0
+        )
+        progress = self.prev_distance - self.distance
+        penalty = (-progress).clip(min=0.0, max=cfg.max_negative_progress)
+        return penalty * near_weight * (self.episode_length_buf > 1).float()
+
+    def _reward_near_goal_orbit_penalty(self):
+        cfg = self.cfg.rewards.near_goal_orbit_penalty_config
+        near_weight = ((cfg.near_goal_distance - self.distance) / cfg.near_goal_distance).clip(
+            min=0.0, max=1.0
+        )
+        goal_dir = self.goal_local_pos / (self.distance.unsqueeze(1) + 1e-4)
+        vel_xy = self.base_lin_vel[:, :2]
+        radial_speed = torch.sum(vel_xy * goal_dir, dim=-1)
+        tangential_speed = torch.abs(goal_dir[:, 0] * vel_xy[:, 1] - goal_dir[:, 1] * vel_xy[:, 0])
+        orbit = (tangential_speed - cfg.tangential_speed_threshold).clip(min=0.0)
+        weak_approach = (cfg.radial_speed_deadband - radial_speed).clip(min=0.0)
+        return (orbit + cfg.radial_deficit_weight * weak_approach) * near_weight
+
+    def _reward_near_goal_command_penalty(self):
+        cfg = self.cfg.rewards.near_goal_command_penalty_config
+        near_weight = ((cfg.near_goal_distance - self.distance) / cfg.near_goal_distance).clip(
+            min=0.0, max=1.0
+        )
+        goal_dir = self.goal_local_pos / (self.distance.unsqueeze(1) + 1e-4)
+        cmd_xy = self.nav_actions_after_clip[:, :2]
+        radial_cmd = torch.sum(cmd_xy * goal_dir, dim=-1)
+        tangential_cmd = torch.abs(goal_dir[:, 0] * cmd_xy[:, 1] - goal_dir[:, 1] * cmd_xy[:, 0])
+        cmd_speed = torch.norm(cmd_xy, dim=-1)
+        target_speed = (self.distance * cfg.target_speed_scale).clip(
+            min=cfg.target_speed_min, max=cfg.target_speed_max
+        )
+        overspeed = (cmd_speed - target_speed).clip(min=0.0)
+        wrong_way = (-radial_cmd).clip(min=0.0)
+        return (
+            overspeed
+            + cfg.tangential_weight * tangential_cmd
+            + cfg.wrong_way_weight * wrong_way
+        ) * near_weight
+
+    def _reward_near_goal_stop_reward(self):
+        cfg = self.cfg.rewards.near_goal_stop_reward_config
+        near_weight = ((cfg.near_goal_distance - self.distance) / cfg.near_goal_distance).clip(
+            min=0.0, max=1.0
+        )
+        speed = torch.norm(self.base_lin_vel[:, :2], dim=-1)
+        yaw_rate = torch.abs(self.base_ang_vel[:, 2])
+        stable = (speed < cfg.speed_threshold) & (yaw_rate < cfg.yaw_rate_threshold)
+        distance_reward = 1.0 / (1.0 + 2.0 * torch.square(self.distance))
+        return distance_reward * near_weight * stable.float()
+
+    def _reward_dynamic_avoid_direction_reward(self):
+        cfg = self.cfg.rewards.dynamic_avoid_direction_reward_config
+        self.pass_behind_score[:] = 0.0
+        if self.dynamic_obs_count == 0 or self.dynamic_tokens.numel() == 0:
+            return self.pass_behind_score
+
+        tokens = self.dynamic_tokens
+        rel_pos = tokens[..., 0:2]
+        rel_vel = tokens[..., 2:4]
+        ttc = tokens[..., 5]
+        valid = tokens[..., 6] > 0.5
+        robot_vel = self.base_lin_vel[:, None, :2]
+        obstacle_vel = rel_vel + robot_vel
+        obstacle_speed = torch.norm(obstacle_vel, dim=-1).clamp(min=1e-4)
+        obstacle_dir = obstacle_vel / obstacle_speed.unsqueeze(-1)
+
+        rel_distance = torch.norm(rel_pos, dim=-1).clamp(min=1e-4)
+        pass_score = torch.sum(rel_pos * obstacle_dir, dim=-1) / rel_distance
+        pass_score = pass_score.clamp(min=-1.0, max=1.0)
+
+        risk_weight = ((cfg.ttc_threshold - ttc) / max(cfg.ttc_threshold, 1e-4)).clip(
+            min=0.0, max=1.0
+        )
+        risky = (
+            valid
+            & (ttc < cfg.ttc_threshold)
+            & (obstacle_speed > cfg.min_obstacle_speed)
+            & (torch.norm(self.base_lin_vel[:, None, :2], dim=-1) > cfg.min_lateral_speed)
+        )
+        weighted_score = torch.where(risky, pass_score * risk_weight, torch.zeros_like(pass_score))
+        denom = torch.clamp((risk_weight * risky.float()).sum(dim=-1), min=1.0)
+        self.pass_behind_score = weighted_score.sum(dim=-1) / denom
+        return self.pass_behind_score
 
     def _reward_dynamic_collision(self):
         return self.dynamic_collision_event.float()

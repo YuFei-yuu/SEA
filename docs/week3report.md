@@ -507,6 +507,195 @@ DynamicTokenCBFLayer 默认安全距离约为 radius 0.32 + margin 0.20 = 0.52
 
 也就是说，当前 CBF 认为可接受的距离可能已经小于几何碰撞判定阈值。这会导致“安全层放行，但环境判定碰撞”的不一致，需要优先修复。
 
+### 6.5 06-21 奖励函数二次优化
+
+根据 `model_500` 视频暴露出的近目标绕远和横穿动态障碍让行方向错误，本次没有直接增加动态障碍物数量，而是先把问题拆成三个更可控的子问题：
+
+```text
+1. 安全层边界是否和环境碰撞判定一致。
+2. 近目标阶段是否仍然强制机器人朝目标收敛。
+3. 横穿动态障碍场景中，策略是否知道应该从障碍物未来轨迹后方通过。
+```
+
+因此奖励函数调整的核心思路不是简单“多给到达奖励”或“多罚碰撞”，而是把不同阶段的行为分开塑形：
+
+```text
+远离目标时：继续强调 goal_progress，保证整体推进。
+靠近目标时：压制绕圈、横向漂移和反向离目标运动。
+动态交互时：用相对速度和 TTC 引导 pass-behind，而不是只按当前距离避障。
+安全层上：让 CBF 安全距离不小于几何碰撞阈值，避免训练信号互相矛盾。
+```
+
+具体修改如下。
+
+第一，修复动态 CBF 与碰撞阈值不一致问题：
+
+```text
+dynamic_collision threshold = 0.65
+DynamicTokenCBFLayer safety_margin = 0.35
+dynamic obstacle radius 约 0.32
+实际动态安全距离约为 0.32 + 0.35 = 0.67
+```
+
+这样动态 CBF 的默认安全边界略大于环境动态碰撞阈值，避免出现“CBF 认为安全、环境却判碰撞”的反向训练信号。
+
+第二，缩短近目标驻留要求并提高紧目标奖励：
+
+```text
+goal_reached_time: 20 -> 12
+reach_pos_target_tight: 10.0 -> 15.0
+```
+
+这一改动的目的，是让机器人在进入目标邻域后更快完成 episode，而不是在目标附近继续探索大幅绕行路径。
+
+第三，新增近目标局部奖励和惩罚：
+
+```text
+near_goal_radial_reward = 4.0
+negative_progress_penalty = -5.0
+near_goal_orbit_penalty = -4.0
+near_goal_command_penalty = -2.0
+near_goal_stop_reward = 4.0
+```
+
+其中各项分工如下：
+
+- `near_goal_radial_reward`：只在近目标区域内奖励朝目标方向的径向速度，避免策略只靠切向运动刷存活时间。
+- `negative_progress_penalty`：当机器人已经接近目标却远离目标时给惩罚，直接针对“到目标旁边又绕出去”的问题。
+- `near_goal_orbit_penalty`：惩罚近目标区域内过大的切向速度，以及径向接近不足的绕圈行为。
+- `near_goal_command_penalty`：从动作命令层面惩罚近目标时过快、横向、反向的导航指令，促使 nominal policy 自己给出更稳定的收敛动作。
+- `near_goal_stop_reward`：在距离目标很近且机体速度、偏航角速度较小时给奖励，鼓励到点后稳定停住。
+
+第四，新增动态让行方向奖励：
+
+```text
+dynamic_avoid_direction_reward = 1.0
+ttc_threshold = 1.2
+min_obstacle_speed = 0.05
+min_lateral_speed = 0.03
+```
+
+该奖励使用 dynamic token 中的：
+
+```text
+rel_pos, rel_vel, radius, ttc, valid
+```
+
+结合当前机器人速度估计障碍物运动方向。当 TTC 较小且障碍物确实在横穿时，计算机器人相对障碍物运动方向的位置关系：
+
+```text
+pass_score = dot(rel_pos, obstacle_direction) / ||rel_pos||
+```
+
+在当前 token 定义 `rel_pos = obstacle_pos - robot_pos` 下，`pass_score > 0` 表示机器人更倾向于位于障碍物运动方向的后方，也就是从动态障碍物未来轨迹后方通过；`pass_score < 0` 则更可能抢到障碍物前方或朝障碍物未来位置绕行。因此该奖励用于修正视频中“障碍物从右向左运动，机器人仍向左绕导致撞到未来位置”的问题。
+
+第五，补充诊断日志和可视化字段：
+
+```text
+ubar_goal_angle
+ustatic_goal_angle
+usafe_goal_angle
+ubar_norm
+usafe_norm
+future_dynamic_clearance
+pass_behind_score
+```
+
+这些字段可以帮助区分问题来源：
+
+```text
+如果 u_bar 已经偏离目标方向，说明 nominal policy 学偏了。
+如果 u_bar 正常但 u_s 偏离，说明 CBF 修正过强或方向不合理。
+如果 pass_behind_score 长期为负，说明动态让行策略仍在抢障碍物前方。
+如果 future_dynamic_clearance 下降而当前 clearance 尚可，说明策略缺少前瞻性。
+```
+
+### 6.6 128 env / 500 iterations 训练与 model_400 录像
+
+完成上述奖励和日志修改后，启动了一轮 `128 env / 500 iterations` 训练：
+
+```text
+training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_
+```
+
+训练保存了：
+
+```text
+model_200.pt
+model_300.pt
+model_400.pt
+model_500.pt
+train_metrics.csv
+analysis/report.md
+analysis/*.png
+```
+
+分析报告显示：
+
+```text
+last_iteration: 490
+last_timesteps: 3016704
+best_success: 1.0000
+best_safe_success: 0.9167
+```
+
+从 checkpoint 对应的训练窗口看，`model_400` 是本轮最值得录像检查的已保存模型：
+
+```text
+iteration 400 / model_400:
+success:                 0.8958
+safe_success:            0.8958
+dynamic_collision_count: 0.0208
+body_collision_count:    0.0833
+total_collision_count:   0.1042
+time_to_goal:           16.2950 s
+pass_behind_score:       0.1614
+```
+
+但训练后段出现明显退化，最终窗口变为：
+
+```text
+iteration 490:
+success:                 0.5417
+safe_success:            0.2083
+dynamic_collision_count: 0.4583
+total_collision_count:   0.8542
+pass_behind_score:      -0.1172
+```
+
+这说明本次 reward 方向是有效的，尤其在 400 iteration 附近形成了更安全的策略；但继续训练到 500 iteration 后，策略又出现动态安全性下降和 pass-behind 方向退化。后续不能默认选择最后一个 checkpoint，而应基于 50 episode 评估和视频选择最佳 checkpoint。
+
+随后录制 `model_400` 的 10 episode 视频：
+
+```text
+training/legged_gym/logs/Go2_pos_dynamic_complex/exported/06_21_04-28-54_model_400.mp4
+```
+
+视频信息：
+
+```text
+10 episodes
+13838 frames
+1000 x 1000
+30 FPS
+约 193 MB
+```
+
+脚本输出中 10 个 episode 的结果为：
+
+```text
+成功 6 次
+失败 4 次
+动态碰撞只出现在第 4 个 episode
+```
+
+阶段性判断：
+
+- 相比原 `model_500`，`model_400` 的训练窗口安全指标明显更好，说明近目标奖励、CBF 边界对齐和 pass-behind 奖励方向基本正确。
+- 录像仍未达到稳定验收标准，10 episode 中仍有 4 次失败，说明策略还没有完全解决近目标收敛和复杂交互下的泛化问题。
+- 后段训练退化提示当前奖励权重可能存在竞争：策略一方面被近目标奖励牵引，另一方面仍受动态避障、安全层修正、接触终止和探索噪声影响，训练到后期可能从较优行为漂移出去。
+- 下一阶段必须把“checkpoint 选择、50 episode 固定评估、视频诊断、消融对比”作为闭环，而不是只看最终训练曲线。
+
 ---
 
 ## 七、本周形成的阶段性认识
@@ -571,67 +760,29 @@ time to goal
 
 ---
 
-## 八、下周计划
+## 八、下一步优化计划
 
-下周建议继续在 Easy complex 上做定向修复，而不是立即提高到 Medium 或 Hard。
-
-### 8.1 近目标收敛修复
-
-计划改动：
+经过 06-21 这轮奖励调整后，下一阶段不应急着进入 Medium/Hard complex，而应先把 Easy complex 中已经出现的较优策略稳定下来。当前最关键的问题已经从“能不能训练出成功率”转变为：
 
 ```text
-goal_reached_time: 20 -> 10~15
-reach_pos_target_tight: 10.0 -> 15.0
-新增 negative_progress_penalty
-新增 near-goal orbit_penalty
-新增 near_goal_stop_reward
+如何防止后段训练退化；
+如何让 model_400 附近的安全成功表现可复现；
+如何进一步减少近目标失败和动态交互失败。
 ```
 
-目标是解决视频中“目标点明明在附近，但机器人绕大远路”的问题。
+### 8.1 先做固定评估，确认 model_400 是否真正优于 model_500
 
-### 8.2 动态让行方向修复
-
-计划改动：
+当前 `model_400` 的训练窗口指标明显优于 `model_500` 末尾窗口，但训练窗口不是严格固定评估。下一步首先要对 `model_300/model_400/model_500` 做固定 50 episode 评估：
 
 ```text
-DynamicTokenCBFLayer safety_margin: 0.20 -> 0.38~0.40
-ttc_risk: -0.8 -> -1.2 或 -1.5
-near_miss: -0.3 -> -0.5
-near_miss ttc_threshold: 0.8 -> 1.0
-新增 dynamic_avoid_direction_reward
+evaluate_checkpoints.py:
+model_300.pt
+model_400.pt
+model_500.pt
+每个 checkpoint 50 episodes
 ```
 
-目标是让机器人在横穿动态障碍物场景中学会从障碍物未来轨迹后方通过，而不是躲向障碍物运动方向。
-
-### 8.3 增强评估与可视化
-
-计划补充：
-
-```text
-记录 u_bar 与 goal direction 夹角
-记录 u_static_safe 与 goal direction 夹角
-记录 u_s 与 goal direction 夹角
-记录 future dynamic clearance
-固定评估 model_300/model_400/model_500
-每个 checkpoint 录制短视频
-```
-
-这样可以判断问题来自 nominal policy，还是来自 CBF 修正方向。
-
-### 8.4 消融实验设计
-
-后续消融顺序：
-
-```text
-Baseline Easy complex
-+ near-goal reward
-+ CBF safety margin alignment
-+ TTC / near-miss enhancement
-+ dynamic_avoid_direction_reward
-+ near-miss replay
-```
-
-评价指标固定为：
+重点看：
 
 ```text
 success_rate
@@ -639,12 +790,116 @@ safe_success_rate
 avg_dynamic_collision_count
 avg_body_collision_count
 avg_near_miss_count
-avg_min_ttc
-avg_min_dynamic_clearance
-shield_intervention_step_rate
-dynamic_cbf_intervention_step_rate
-mean_time_to_goal
+avg_time_to_goal
+avg_future_dynamic_clearance
+avg_pass_behind_score
 ```
+
+如果固定评估也确认 `model_400` 最优，则后续以 `model_400` 作为 Easy complex 当前基线，而不是使用最后的 `model_500`。
+
+### 8.2 稳定训练后段，降低 400 iteration 后的策略漂移
+
+本轮训练在 400 iteration 附近达到较好表现，490 iteration 明显退化。下一步需要围绕训练稳定性做小步实验：
+
+```text
+A. 降低后半程学习率或缩短单轮训练到 400 iterations。
+B. 保存更密集 checkpoint，例如 300/350/400/450/500。
+C. 观察 entropy、action_std、surrogate_loss 和 intervention_loss，判断是否探索噪声导致后期破坏已学策略。
+D. 若后段退化重复出现，考虑在 300 iteration 后降低 entropy_coef 或启用 early-stop checkpoint selection。
+```
+
+验收标准不是最终 iteration 最好，而是固定评估下能稳定复现：
+
+```text
+safe_success_rate >= 0.45
+avg_dynamic_collision_count <= 0.25
+avg_body_collision_count <= 0.5
+视频中不再频繁近目标大绕行
+```
+
+### 8.3 近目标奖励继续做消融，而不是一次性加大所有权重
+
+当前近目标奖励已经加入，但 10 episode 录像仍有失败。下一步需要单独检查近目标行为：
+
+```text
+统计失败 episode 中最后 5 秒的 distance 曲线。
+统计 near_goal_orbit_penalty、negative_progress_penalty、near_goal_stop_reward 的实际贡献。
+对比 u_bar_goal_angle 与 usafe_goal_angle，判断绕远来自 policy 还是 CBF。
+```
+
+候选调参方向：
+
+```text
+near_goal_stop_reward: 4.0 -> 5.0 或 6.0
+near_goal_orbit_penalty: -4.0 -> -5.0
+near_goal_command_penalty 保持谨慎，避免过强导致近目标不敢动
+goal_reached_time 保持 12，暂不继续降低，防止误判到达
+```
+
+如果视频中仍出现“离目标很近但继续绕行”，优先增强 `near_goal_orbit_penalty` 和 `near_goal_stop_reward`；如果出现“近目标停在外圈不进去”，则优先增强 `near_goal_radial_reward` 和 `reach_pos_target_tight`。
+
+### 8.4 动态让行方向继续围绕 pass-behind 做验证
+
+`model_400` 窗口中 `pass_behind_score` 为正，末尾窗口变为负，这说明 `dynamic_avoid_direction_reward` 有作用，但还不稳定。下一步应从视频和指标两侧验证：
+
+```text
+横穿障碍物 episode 中单独记录 pass_behind_score。
+检查 pass_behind_score < 0 的 episode 是否更容易 near miss 或 dynamic collision。
+按 motion_type 分组统计，优先看 linear_crossing 和 linear_diagonal。
+```
+
+候选调参方向：
+
+```text
+dynamic_avoid_direction_reward: 1.0 -> 1.5
+ttc_threshold: 1.2 -> 1.5
+near_miss ttc_threshold: 0.8 -> 1.0
+near_miss: -0.3 -> -0.5
+```
+
+调参原则是先增强 direction reward，再增强 near-miss 惩罚。原因是只加大碰撞/near-miss 惩罚，策略可能学到保守停顿；而 direction reward 能告诉策略“往哪边让”。
+
+### 8.5 保持 Easy complex，暂缓开启 near-miss replay 和 Medium curriculum
+
+当前 Easy complex 仍没有稳定达到验收标准，因此暂时不建议立刻：
+
+```text
+增加动态障碍物数量到 [3, 5]
+提高速度到 [0.20, 0.45]
+开启 enable_near_miss_replay
+引入 GNN/Transformer/Reach-Avoid 新网络
+```
+
+推荐顺序是：
+
+```text
+A0: 固定评估 model_300/400/500，选出真实最佳 checkpoint。
+A1: 以最佳 checkpoint 对应配置复训 3 个随机种子，确认 model_400 优势是否可复现。
+A2: 近目标奖励小消融，只动一个权重，观察近目标绕远是否下降。
+A3: pass-behind 奖励小消融，只动一个权重，观察横穿障碍方向是否改善。
+A4: 达到 Easy complex 验收后，再开启 near-miss replay。
+A5: replay 稳定后再进入 Medium curriculum。
+```
+
+### 8.6 训练记录与可视化要求
+
+后续每轮训练仍需严格保存和检查：
+
+```text
+train_metrics.csv
+analysis/report.md
+analysis/rl_success_rates.png
+analysis/safety_events.png
+analysis/safety_clearance_ttc.png
+analysis/action_goal_alignment.png
+analysis/dynamic_direction.png
+analysis/reward_breakdown.png
+eval_checkpoints.csv
+eval_checkpoints_summary.md
+最佳 checkpoint 10 episode 视频
+```
+
+尤其要把 `dynamic_direction.png`、`action_goal_alignment.png` 和录像一起看。仅凭训练曲线不能判断近目标绕远和动态让行方向是否真正改善。
 
 ---
 
@@ -688,6 +943,12 @@ training/legged_gym/logs/Go2_pos_dynamic_complex/06_20_05-14-50_
 training/legged_gym/logs/Go2_pos_dynamic_complex/06_20_07-23-45_
 ```
 
+奖励函数二次优化后训练：
+
+```text
+training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_
+```
+
 关键文件：
 
 ```text
@@ -696,12 +957,20 @@ model_300.pt
 model_400.pt
 model_500.pt
 train_metrics.csv
+analysis/report.md
+analysis/*.png
 ```
 
 `model_500` 视频：
 
 ```text
 training/legged_gym/logs/Go2_pos_dynamic_complex/exported/06_20_07-23-45_model_500.mp4
+```
+
+奖励函数二次优化后的 `model_400` 视频：
+
+```text
+training/legged_gym/logs/Go2_pos_dynamic_complex/exported/06_21_04-28-54_model_400.mp4
 ```
 
 ---
@@ -714,6 +983,6 @@ training/legged_gym/logs/Go2_pos_dynamic_complex/exported/06_20_07-23-45_model_5
 
 第二，工程上已经把 `go2_pos_dynamic_complex` 从不稳定的在线动态障碍物环境，改造成 episode 预生成轨迹、几何碰撞检测、动态 token 观测、velocity-aware CBF 的复杂动态避障基座。
 
-第三，训练中经历了 `success=0` 的失败，但通过新增 reset reason 和训练指标，定位到 contact reset 误触发和 curriculum 过难问题；修复后 Easy complex 已经能学出非零成功率，下一步问题从“跑不起来”转向“如何让策略更高效、更预测式地安全避障”。
+第三，训练中经历了 `success=0` 的失败，但通过新增 reset reason 和训练指标，定位到 contact reset 误触发和 curriculum 过难问题；修复后 Easy complex 已经能学出非零成功率，并进一步通过近目标奖励、pass-behind 奖励和 CBF 边界对齐，在 `model_400` 附近获得了更好的安全成功窗口。
 
-这说明本周的主要贡献不是单个指标提升，而是完成了从文献理解、方案取舍、环境重构、安全层扩展、训练诊断到下一步研究问题凝练的完整闭环。
+这说明本周的主要贡献不是单个指标提升，而是完成了从文献理解、方案取舍、环境重构、安全层扩展、训练诊断、奖励函数定向修复到下一步消融计划的完整闭环。下一阶段要重点解决的是训练后段退化、固定评估复现和视频中的残余失败行为。

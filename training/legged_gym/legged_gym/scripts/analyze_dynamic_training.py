@@ -229,9 +229,30 @@ def plot_all_curves(
             [
                 ("min_ttc", "Min TTC"),
                 ("min_dynamic_clearance", "Min Dynamic Clearance"),
+                ("future_dynamic_clearance", "Future Dynamic Clearance"),
                 ("active_dynamic_count", "Active Dynamic Count"),
             ],
             "Dynamic Clearance and TTC",
+        ),
+        (
+            "dynamic_direction.png",
+            [
+                ("pass_behind_score", "Pass Behind Score"),
+                ("future_dynamic_clearance", "Future Dynamic Clearance"),
+                ("min_dynamic_clearance", "Min Dynamic Clearance"),
+            ],
+            "Dynamic Avoidance Direction",
+        ),
+        (
+            "action_goal_alignment.png",
+            [
+                ("ubar_goal_angle", "u_bar Goal Angle"),
+                ("ustatic_goal_angle", "u_static Goal Angle"),
+                ("usafe_goal_angle", "u_safe Goal Angle"),
+                ("ubar_norm", "u_bar Norm"),
+                ("usafe_norm", "u_safe Norm"),
+            ],
+            "Action Goal Alignment",
         ),
         (
             "cbf_intervention.png",
@@ -326,6 +347,11 @@ def summarize(rows: Rows, fieldnames: Sequence[str], analysis_dir: str) -> Dict[
         "last_near_miss_count": last.get("near_miss_count", 0.0),
         "last_min_ttc": last.get("min_ttc", 0.0),
         "last_min_dynamic_clearance": last.get("min_dynamic_clearance", 0.0),
+        "last_future_dynamic_clearance": last.get("future_dynamic_clearance", 0.0),
+        "last_pass_behind_score": last.get("pass_behind_score", 0.0),
+        "last_ubar_goal_angle": last.get("ubar_goal_angle", 0.0),
+        "last_ustatic_goal_angle": last.get("ustatic_goal_angle", 0.0),
+        "last_usafe_goal_angle": last.get("usafe_goal_angle", 0.0),
         "last_shield_intervention_step_rate": last.get("shield_intervention_step_rate", 0.0),
         "last_dynamic_cbf_intervention_step_rate": last.get(
             "dynamic_cbf_intervention_step_rate", 0.0

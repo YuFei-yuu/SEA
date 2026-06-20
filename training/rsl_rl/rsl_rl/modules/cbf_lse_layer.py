@@ -67,7 +67,12 @@ class ExactLSECBFLayer(nn.Module):
 
 
 class DynamicTokenCBFLayer(nn.Module):
-    def __init__(self, default_safe_radius=0.45, safety_margin=0.20, damping_factor=1.0):
+    def __init__(
+        self,
+        default_safe_radius=0.45,
+        safety_margin=0.35,
+        damping_factor=1.0,
+    ):
         super().__init__()
         self.default_safe_radius = default_safe_radius
         self.safety_margin = safety_margin

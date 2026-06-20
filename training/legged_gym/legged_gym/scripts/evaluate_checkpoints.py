@@ -266,12 +266,26 @@ def main():
             "avg_near_miss_count",
             "avg_min_ttc",
             "avg_min_dynamic_clearance",
+            "avg_future_dynamic_clearance",
             "avg_dynamic_cbf_intervention_rate",
         ],
         "Safety Metrics by Checkpoint",
         "Metric value",
     ):
         generated.append("eval_safety_metrics_bars.png")
+    if _plot_bar_group(
+        summaries,
+        analysis_dir,
+        "eval_dynamic_direction_bars.png",
+        [
+            "avg_pass_behind_score",
+            "avg_future_dynamic_clearance",
+            "avg_min_dynamic_clearance",
+        ],
+        "Dynamic Direction Metrics by Checkpoint",
+        "Metric value",
+    ):
+        generated.append("eval_dynamic_direction_bars.png")
     if _plot_bar_group(
         summaries,
         analysis_dir,

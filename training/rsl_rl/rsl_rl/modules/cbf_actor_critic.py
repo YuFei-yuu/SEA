@@ -19,6 +19,9 @@ class DifferentiableSafeActorCritic(nn.Module):
                     num_goal_obs=2,
                     num_dynamic_obs=0,
                     his_len=10,
+                    dynamic_cbf_default_safe_radius=0.45,
+                    dynamic_cbf_safety_margin=0.35,
+                    dynamic_cbf_damping_factor=1.0,
                  **kwargs):
         super().__init__()
 
@@ -93,7 +96,12 @@ class DifferentiableSafeActorCritic(nn.Module):
 
         # 4. Closed-form CBF Layer
         self.cbf_layer = ExactLSECBFLayer(num_rays=num_rays)
-        self.dynamic_cbf_layer = DynamicTokenCBFLayer()
+        self.dynamic_cbf_layer = DynamicTokenCBFLayer(
+            default_safe_radius=dynamic_cbf_default_safe_radius,
+            safety_margin=dynamic_cbf_safety_margin,
+            damping_factor=dynamic_cbf_damping_factor,
+        )
+        self.diagnostics = {}
 
         self.std = nn.Parameter(1.5 * torch.ones(num_actions))
 
@@ -162,8 +170,30 @@ class DifferentiableSafeActorCritic(nn.Module):
         self.u_bar = u_bar
         self.u_static_safe = u_static_safe
         self.u_s = u_s
+        self.diagnostics = self._compute_action_diagnostics(
+            goals, u_bar, u_static_safe, u_s
+        )
         
         return u_s
+
+    def _compute_action_diagnostics(self, goals, u_bar, u_static_safe, u_s):
+        goal_norm = torch.norm(goals, dim=-1).clamp(min=1e-4)
+        goal_dir = goals / goal_norm.unsqueeze(-1)
+
+        def angle_to_goal(action):
+            action_2d = action[:, :2]
+            action_norm = torch.norm(action_2d, dim=-1).clamp(min=1e-4)
+            cos_angle = torch.sum(action_2d * goal_dir, dim=-1) / action_norm
+            cos_angle = cos_angle.clamp(min=-1.0, max=1.0)
+            return torch.acos(cos_angle)
+
+        return {
+            "ubar_goal_angle": angle_to_goal(u_bar).detach(),
+            "ustatic_goal_angle": angle_to_goal(u_static_safe).detach(),
+            "usafe_goal_angle": angle_to_goal(u_s).detach(),
+            "ubar_norm": torch.norm(u_bar[:, :2], dim=-1).detach(),
+            "usafe_norm": torch.norm(u_s[:, :2], dim=-1).detach(),
+        }
     
     def update_distribution(self, observations):
         mean = self.forward(observations)
