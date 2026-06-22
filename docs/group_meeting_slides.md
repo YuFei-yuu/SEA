@@ -223,31 +223,38 @@ flowchart TD
 
 #### 论文七：DRL-VO — Velocity Obstacles 引导的强化学习动态避障 (2023)
 
-| 作者 | — |
+| 项目 | 内容 |
 |------|------|
+| 标题 | DRL-VO: Learning to Navigate Through Crowded Dynamic Scenes Using Velocity Obstacles |
+| 作者/机构 | Zhanteng Xie, Philip Dames / Temple University, Department of Mechanical Engineering |
+| 来源 | IEEE Transactions on Robotics, 39(4):2700-2719, 2023；[arXiv:2301.06512](https://arxiv.org/abs/2301.06512) |
 
 ```mermaid
 flowchart LR
-    P7A["短历史 LiDAR"] --> P7D["RL 策略训练"]
-    P7B["行人运动学信息"] --> P7D
-    P7C["sub-goal"] --> P7D
+    P7A["0.5s / 10帧<br/>短历史 LiDAR"] --> P7D["RL 策略训练"]
+    P7B["附近行人运动学<br/>相对位置 + 速度"] --> P7D
+    P7C["局部 sub-goal"] --> P7D
     P7V["VO / TTC 风险奖励"] --> P7D
-    P7D --> P7E["拥挤场景动态避障"]
-    P7E --> P7F["真实机器人零重训迁移"]
+    P7D --> P7E["转向角 + 前进速度"]
+    P7E --> P7F["最多 55 个行人"]
+    P7F --> P7G["真实机器人零重训迁移"]
 ```
 
-**方法要点：** 用短历史 LiDAR、附近行人运动学信息和 sub-goal 作为输入，在 RL reward 中显式加入 Velocity Obstacle 项——将传统 VO 算法中对碰撞风险的度量转化为奖励信号。实验包含最多 55 个行人的拥挤场景，实现了**真实机器人零重训迁移**（sim 训练后直接在真实机器人上运行，不需要额外 fine-tuning）。
+**方法要点：** 用 0.5 秒短历史 LiDAR、附近行人运动学信息和局部 sub-goal 作为输入，策略输出转向角与前进速度；在 reward 中显式加入 Velocity Obstacle 项，把“当前动作是否会进入未来碰撞速度锥”转化为训练信号。
 
-**创新点：** (1) 证明了**结构先验（VO/TTC）融入 RL 奖励比纯黑箱 RL 更有效**——这是将经典几何方法与现代 RL 融合的关键洞察；(2) 验证了 VO 奖励的泛化能力——55 个行人场景未见过的密度下仍有效；(3) 零重训 sim-to-real 迁移——说明 VO/TTC 特征具有足够的物理不变性。
+**创新点：** (1) 把 VO/TTC 几何先验注入 RL reward，在撞上前提供风险梯度；(2) 在最多 55 个行人的 3D 仿真场景中验证泛化；(3) 仿真训练后直接部署到真实机器人，且在 BARN Challenge 中展示了跨静态狭窄环境和不同平台的泛化。
 
-**对 SEA-Nav 的启发：** 最直接的应用参考。将静态碰撞惩罚升级为 VO/TTC 风险奖励——TTC 越小惩罚越大，在碰撞前提供梯度。动态障碍物相对速度应作为观测 token 的一部分。零重训迁移的成功为后续实机部署提供了信心。
+**对 SEA-Nav 的启发：** 动态避障不能只惩罚碰撞结果，必须把未来碰撞风险提前写进观测和奖励。本周的 dynamic token、TTC 风险项和 pass-behind 方向奖励都直接受这篇启发。
 
 ---
 
 #### 论文八：Intention-Aware CrowdNav — 预测+注意力图网络 (ICRA 2023)
 
-| 作者 | — |
+| 项目 | 内容 |
 |------|------|
+| 标题 | Intention Aware Robot Crowd Navigation with Attention-Based Interaction Graph |
+| 作者/机构 | Shuijing Liu, Peixin Chang, Zhe Huang 等 / UIUC ECE；Junyi Geng / Penn State Aerospace Engineering |
+| 来源 | IEEE ICRA 2023；[arXiv:2203.01821](https://arxiv.org/abs/2203.01821) |
 
 ```mermaid
 flowchart TD
@@ -259,61 +266,71 @@ flowchart TD
     P8E --> P8F["预期性动态导航"]
 ```
 
-**方法要点：** 用 recurrent graph neural network + attention 建模机器人-人群之间的时空交互，并**预测动态 agent 的未来轨迹**，将预测结果接入 model-free RL，避免机器人闯入他人的预期路径。核心思想是"不仅要看人在哪里，还要预测人将要走到哪里"。
+**方法要点：** 用 recurrent GNN 和 attention 建模机器人-人群之间的时空交互，并预测动态 agent 未来几个时间步的轨迹；预测结果进入 model-free RL，避免机器人闯入他人的预期路径。
 
-**创新点：** (1) 将轨迹预测与导航决策统一在一个框架中——传统做法是分开的（先预测再规划），本文让预测为决策提供特征；(2) 注意力图网络天然适合建模"机器人-障碍物"和"障碍物-障碍物"的双重交互；(3) 预测信息的融入使策略具有"预期性"——提前绕行而非被动反应。
+**创新点：** (1) 将意图/轨迹预测与导航决策统一在一个学习框架中；(2) 图网络同时建模 Robot-Human 与 Human-Human 交互；(3) attention 自动突出迎面靠近、路径冲突更强的 agent；(4) 成功迁移到真实 TurtleBot 2i。
 
-**对 SEA-Nav 的启发：** 为引入 K 个动态障碍物的图注意力编码器提供了实现参考。可以探索将 dynamic token 接入 GNN encoder，同时建模 Robot↔Obstacle 和 Obstacle↔Obstacle 交互。适合后续社会导航方向扩展。
+**对 SEA-Nav 的启发：** 固定 4 个 dynamic token 后续可扩展为可变数量 token，并接入 GNN/attention encoder；长期目标是从“反应式避障”升级为“预期式避障”。
 
 ---
 
 #### 论文九：NavRL — VO 安全层的 PPO 导航 (2024)
 
-| 作者 | — |
+| 项目 | 内容 |
 |------|------|
+| 标题 | NavRL: Learning Safe Flight in Dynamic Environments |
+| 作者/机构 | Zhefan Xu, Xinming Han, Haoyu Shen, Hanyu Jin, Kenji Shimada / Carnegie Mellon University, Mechanical Engineering |
+| 来源 | IEEE Robotics and Automation Letters, 2025；[arXiv:2409.15634](https://arxiv.org/abs/2409.15634) |
 
 ```mermaid
 flowchart LR
-    P9A["静态 + 动态障碍观测"] --> P9B["PPO 策略"]
+    P9A["静态 + 动态障碍观测"] --> P9B["PPO 飞行策略"]
     P9B --> P9C["nominal action"]
     P9C --> P9D["VO-inspired safety shield"]
     P9D --> P9E["安全动作"]
-    P9E --> P9F["动态环境导航"]
+    P9E --> P9F["zero-shot real flight"]
 ```
 
-**方法要点：** 用 PPO 学习 UAV 在静态与动态障碍中的导航，引入受 Velocity Obstacles 启发的 **safety shield**——RL 策略输出导航决策，安全层在最后兜底，减少神经网络黑箱策略的失败。这是"RL + safety layer"架构在动态环境中的直接验证。
+**方法要点：** 用 PPO 训练 UAV 在静态与动态障碍中的导航策略，并在策略外叠加一个受 Velocity Obstacles 启发的 simple safety shield；训练使用 NVIDIA Isaac Sim 并行化大量 quadcopter 环境。
 
-**创新点：** (1) 验证了"RL 负责导航决策 + VO 类安全层负责最后兜底"的双层架构在动态环境中的有效性；(2) safety shield 的设计直接受传统 VO 方法的几何原理启发，具有可解释性；(3) 双层架构比纯端到端策略更安全——即使 RL 策略出错，安全层仍能拦截危险动作。
+**创新点：** (1) 验证了“RL 负责决策 + 几何安全盾兜底”的双层架构在动态环境中有效；(2) safety shield 可解释，比纯端到端策略更稳；(3) 支持 simulation-to-real zero-shot flight，并在真实动态飞行实验中降低碰撞。
 
-**对 SEA-Nav 的启发：** 为 SEA-Nav 的"PPO + CBF"路线提供了直接的工程验证——这种架构在动态环境中也被证明有效。后续可考虑增强安全层，使其融合 VO 思想（不仅是距离约束，还有速度约束）。
+**对 SEA-Nav 的启发：** 证明不必推翻 PPO + CBF 基座；应沿着“学习策略 + 几何/CBF 安全层”继续升级，将静态距离 CBF 扩展为速度感知安全层。
 
 ---
 
 #### 论文十：One Filter — 观测条件化的可达性安全过滤器 (2024)
 
-| 作者 | — |
+| 项目 | 内容 |
 |------|------|
+| 标题 | One Filter to Deploy Them All: Robust Safety for Quadrupedal Navigation in Unknown Environments |
+| 作者/机构 | Albert Lin, Shuang Peng, Somil Bansal / University of Southern California, Stanford University |
+| 来源 | arXiv 2024；[arXiv:2412.09989](https://arxiv.org/abs/2412.09989)；项目页：[One Filter](https://sia-lab-git.github.io/One_Filter_to_Deploy_Them_All/) |
 
 ```mermaid
 flowchart LR
     P10A["LiDAR 观测"] --> P10C["Observation-conditioned<br/>Reachability Safety Filter"]
+    P10E["Disturbance estimation"] --> P10C
     P10B["Nominal controller"] --> P10C
     P10C --> P10D["必要时覆盖控制"]
-    P10D --> P10E["未知环境安全导航"]
+    P10D --> P10F["未知环境 Go1 安全导航"]
 ```
 
-**方法要点：** 提出 **observation-conditioned reachability-based safety filter**——用 LiDAR 输入**动态构造安全区域**，在必要时覆盖 nominal controller。与固定 CBF 不同，安全区域是根据当前 LiDAR 观测实时计算的，因此可以适应未知环境中的动态变化。
+**方法要点：** 提出 OCR safety filter：用 LiDAR 观测输入 OCR value network，预测控制理论安全值函数，再构造 adaptive safety filter；同时用 disturbance estimation module 处理真实部署中的动力学不确定性。
 
-**创新点：** (1) observation-conditioned 是相对于 state-conditioned 的重要进步——不需要完整状态信息，直接从原始传感器观测计算安全区域；(2) 适用于不同四足控制器——是一个"即插即用"的安全层；(3) 未知环境中验证——不要求环境地图或障碍物模型已知。
+**创新点：** (1) 从 state-conditioned CBF 推进到 observation-conditioned reachability；(2) 不依赖先验地图、完整状态或特定控制器；(3) OCR-VN 可根据新障碍和动态扰动在线适配；(4) 在 Unitree Go1 和不同 hierarchical controllers 上验证 controller-agnostic 安全保护。
 
-**对 SEA-Nav 的启发：** 适合做 SEA-Nav 安全层的下一阶段升级——将当前 LSE-CBF 升级为以观测（射线+token）为条件的动态安全过滤器。安全裕度不再是全局固定配置，而是根据局部环境实时计算的。
+**对 SEA-Nav 的启发：** 当前 DynamicTokenCBFLayer 仍是手工结构；下一步可把安全裕度和介入强度做成 observation-conditioned，让拥挤、靠近、扰动大时自动收紧，稀疏和远离时减少干预。
 
 ---
 
 #### 论文十一：REASAN — 四足模块化安全导航系统 (2025)
 
-| 作者 | — |
+| 项目 | 内容 |
 |------|------|
+| 标题 | REASAN: Learning Reactive Safe Navigation for Legged Robots |
+| 作者/机构 | Qihao Yuan, Ziyu Cao, Ming Cao, Kailai Li / University of Groningen, Linköping University |
+| 来源 | arXiv 2025；[arXiv:2512.09537](https://arxiv.org/abs/2512.09537)；代码：[ASIG-X/REASAN](https://github.com/ASIG-X/REASAN) |
 
 ```mermaid
 flowchart TD
@@ -327,18 +344,21 @@ flowchart TD
     P11F --> P11G["复杂动态环境安全导航"]
 ```
 
-**方法要点：** 面向复杂动态环境的四足反应式安全导航系统，包含 **locomotion + safety shielding + navigation** 三个 RL policy，加上处理 LiDAR 点云的 **transformer-based exteroceptive estimator**。模块化设计将整体导航问题分解为可独立优化和组合的子问题。
+**方法要点：** 面向复杂动态环境的四足反应式安全导航系统，由三个 RL policy（locomotion / safety shielding / navigation）和一个 transformer-based exteroceptive estimator 组成；所有模块在仿真中训练，组合后实现 onboard real-time navigation。
 
-**创新点：** (1) 系统级模块化架构——导航策略 + 安全屏障 + 感知估计器，比端到端单一策略更稳定、更可解释；(2) Transformer 感知估计器处理 LiDAR 点云，提供丰富的环境理解；(3) 三个 policy 各自独立训练，组合使用时互不干扰；(4) 证明了模块化在复杂动态场景中的优越性。
+**创新点：** (1) 将复杂四足导航拆成感知估计、安全屏障、导航策略和运动控制几个可诊断模块；(2) 单 LiDAR 点云输入即可处理复杂动态环境；(3) 不依赖复杂 heuristic 或精细 policy switching，而用标准 RL、targeted reward shaping 和 curriculum design；(4) 覆盖单机器人与多机器人场景。
 
-**对 SEA-Nav 的启发：** 提供了系统级参考架构。SEA-Nav 当前已具备 navigation（导航策略）和 safety shielding（CBF 安全层），缺少的是显式的感知估计器。后续可参考 REASAN 的模块化设计，将感知、安全、导航三层解耦。
+**对 SEA-Nav 的启发：** SEA-Nav 已有 navigation policy 和 safety shielding，缺少显式外感知估计器。后续从 2D sparse ray 扩展到点云时，可参考“感知估计器 + 安全盾 + 导航策略 + 运动策略”的系统拆分。
 
 ---
 
 #### 论文十二：Omni-Perception — 全向 3D LiDAR 动态避障 (2025)
 
-| 作者 | — |
+| 项目 | 内容 |
 |------|------|
+| 标题 | Omni-Perception: Omnidirectional Collision Avoidance for Legged Locomotion in Dynamic Environments |
+| 作者/机构 | Zifan Wang, Teli Ma, Yufei Jia, Xun Yang, Jiaming Zhou, Wenlong Ouyang, Qiang Zhang, Junwei Liang / HKUST(GZ), HKUST, Tsinghua University, Beijing Innovation Center of Humanoid Robotics |
+| 来源 | arXiv 2025；[arXiv:2505.19214](https://arxiv.org/abs/2505.19214)；代码：[OmniPerception](https://github.com/aCodeDog/OmniPerception) |
 
 ```mermaid
 flowchart TD
@@ -350,76 +370,48 @@ flowchart TD
     P12E --> P12F["四足全向动态避障"]
 ```
 
-**方法要点：** 用时序 3D LiDAR 点云做端到端四足全向避障，提出 **PD-RiskNet** 分别处理近端风险（需要立即反应）和远端风险（需要提前规划）。支持 Isaac Gym 等仿真平台，将深度学习方法引入 LiDAR 点云的全向动态避障。
+**方法要点：** 直接处理 raw temporal 3D LiDAR point clouds，端到端学习四足全向避障；核心模块 PD-RiskNet 将近端风险和远端风险分开编码，避免不同时间尺度的风险信号互相竞争。
 
-**创新点：** (1) PD-RiskNet 的近端/远端风险分离处理——近端风险需要快速反应型策略，远端风险需要规划型策略，分而治之；(2) 从 2D LiDAR 扩展到 3D LiDAR 全向感知——不再局限于水平面扫描；(3) 端到端从点云到控制指令，不依赖显式的物体检测；(4) 支持 Isaac Gym，与 SEA-Nav 仿真栈兼容。
+**创新点：** (1) Proximal-Distal 风险分离：近端风险即时反应，远端风险提前规划；(2) 从 2D LiDAR 扩展到 3D 全向空间感知；(3) 不依赖 elevation map 或显式目标检测；(4) 提供高保真 LiDAR 仿真工具包，兼容 Isaac Gym、Genesis、MuJoCo。
 
-**对 SEA-Nav 的启发：** 后续可从 2D sparse LiDAR 扩展到 3D LiDAR 全向动态避障。近端/远端风险分离的思想可融入当前奖励设计——近端用惩罚压制，远端用引导塑形。
+**对 SEA-Nav 的启发：** 长期可从 2D sparse LiDAR 扩展到 3D LiDAR；短期可借鉴近端/远端风险分离：近端危险用强惩罚压制，远端危险用轻量引导塑形。
 
 ---
 
-### 2.3 方法汇总：四大类别与文献归属
+### 2.3 方法汇总：五大类别与文献归属
 
 | 方法类别 | 核心思想 | 归属文献 | 与 SEA-Nav 的关系 |
 |------|---------|---------|---------|
-| **类别一：VO/TTC 引导的强化学习** | 在观测/奖励中显式加入速度障碍和碰撞时间信息，以结构先验增强 RL | DRL-VO, NavRL | 本周已落地——观测中加入 dynamic token (TTC+rel_vel)，奖励中加入 TTC 风险项和 pass-behind 方向奖励 |
-| **类别二：CBF / Safety Filter / Reachability** | 策略负责导航效率，安全层负责约束保障；参数自适应或观测条件化 | Online CBF, One Filter, REASAN, NavRL, HJ Reachability Survey | 本周已落地——velocity-aware DynamicTokenCBFLayer；长期可升级为 observation-conditioned safety filter |
-| **类别三：Reach-Avoid 值网络 / 恢复策略** | 学习预测未来碰撞风险值函数，高风险时切换恢复策略或修正导航动作 | Agile But Safe, One Filter, HJ Reachability Survey | 预留扩展——RA 值网络可调节 CBF 动态安全裕度；near-miss replay 可为恢复策略提供训练数据 |
-| **类别四：图网络 / Transformer / Attention 交互建模** | 显式建模机器人与障碍物间的时空交互关系，区分异质交互类型 | HEIGHT, Intention-Aware CrowdNav, Subgoal-Attention, Omni-Perception | 本周保留接口——dynamic token 结构化语义向量可接 GNN/Attention encoder；射线 Attention 为短期改进 |
+| 类别一：VO/TTC 引导的强化学习 | 在观测/奖励中显式加入速度障碍和碰撞时间信息，以结构先验增强 RL | DRL-VO, NavRL | 本周已落地——观测中加入 dynamic token (TTC+rel_vel)，奖励中加入 TTC 风险项和 pass-behind 方向奖励 |
+| 类别二：CBF / Safety Filter / Reachability | 策略负责导航效率，安全层负责约束保障；参数自适应或观测条件化 | Online CBF, One Filter, REASAN, NavRL, HJ Reachability Survey | 本周已落地——velocity-aware DynamicTokenCBFLayer；长期可升级为 observation-conditioned safety filter |
+| 类别三：Reach-Avoid 值网络 / 恢复策略 | 学习预测未来碰撞风险值函数，高风险时切换恢复策略或修正导航动作 | Agile But Safe, One Filter, HJ Reachability Survey | 预留扩展——RA 值网络可调节 CBF 动态安全裕度；near-miss replay 可为恢复策略提供训练数据 |
+| 类别四：图网络 / Transformer / Attention 交互建模 | 显式建模机器人与障碍物间的时空交互关系，区分异质交互类型 | HEIGHT, Intention-Aware CrowdNav, Subgoal-Attention | 本周保留接口——dynamic token 结构化语义向量可接 GNN/Attention encoder；射线 Attention 为短期改进 |
+| 类别五：模块化系统 / 3D LiDAR 感知 | 将感知估计、安全过滤、导航策略和运动控制拆成可诊断模块，或直接利用 3D 点云全向感知 | REASAN, Omni-Perception | 长期方向——当前先稳定 2D sparse LiDAR 基座，后续扩展外感知估计器与 3D LiDAR |
 
 ### 2.4 交叉验证：12 篇文献的共同指向
 
-```mermaid
-flowchart TB
-    subgraph C1["观测 + TTC reward"]
-        direction TB
-        C1A["DRL-VO"] --> C1M["结构先验融入观测与奖励"]
-        C1B["NavRL"] --> C1M
-        C1C["DRL Survey"] --> C1M
-    end
+| 文献 | 观测 + TTC reward | 动态 CBF / Safety Filter | 学习安全值网络 | 结构化交互编码 | 模块化感知 / 3D LiDAR |
+|:---|:---:|:---:|:---:|:---:|:---:|
+| Agile But Safe | | | ✓ | | |
+| Online CBF | | ✓ | | ✓ | |
+| HEIGHT | | | | ✓ | |
+| Subgoal-Attention | | | | ✓ | |
+| HJ Survey | | ✓ | ✓ | | |
+| DRL Survey | | ✓ | | ✓ | |
+| DRL-VO | ✓ | | | | |
+| CrowdNav | | | | ✓ | |
+| NavRL | ✓ | ✓ | | | |
+| One Filter | | ✓ | ✓ | | |
+| REASAN | | ✓ | | | ✓ |
+| Omni-Perception | | | | | ✓ |
 
-    subgraph C2["动态 CBF / Safety Filter"]
-        direction TB
-        C2A["Online CBF"] --> C2M["速度感知安全层"]
-        C2B["One Filter"] --> C2M
-        C2C["REASAN"] --> C2M
-        C2D["NavRL"] --> C2M
-        C2E["HJ Survey"] --> C2M
-        C2F["DRL Survey"] --> C2M
-    end
-
-    subgraph C3["学习安全值网络"]
-        direction TB
-        C3A["Agile But Safe"] --> C3M["未来碰撞风险预测"]
-        C3B["One Filter"] --> C3M
-        C3C["HJ Survey"] --> C3M
-        C3D["DRL Survey"] --> C3M
-    end
-
-    subgraph C4["结构化交互编码"]
-        direction TB
-        C4A["HEIGHT"] --> C4M["GNN / Attention 编码"]
-        C4B["CrowdNav"] --> C4M
-        C4C["Subgoal-Attention"] --> C4M
-        C4D["Omni-Perception"] --> C4M
-        C4E["Online CBF"] --> C4M
-        C4F["REASAN"] --> C4M
-        C4G["DRL Survey"] --> C4M
-    end
-
-    C1M --> C5["汇合结论<br/>观测编码运动趋势 + TTC reward"]
-    C2M --> C6["汇合结论<br/>动态 CBF / Safety Filter"]
-    C3M --> C7["汇合结论<br/>学习安全值网络"]
-    C4M --> C8["汇合结论<br/>结构化交互建模"]
-```
-
-十二条文献从不同角度汇聚到同一个判断：**动态避障的核心不是仿真中加 moving actor，而是四件事——观测中编码运动趋势、奖励中融入短时碰撞风险、安全层升级为速度感知、策略学会从障碍物后方通过。** 这为 Motion-Aware SEA-Nav 的设计提供了完整的学术支撑。
+十二条文献从不同角度汇聚到同一个判断：**动态避障的核心不是仿真中加 moving actor，而是一组 motion-aware 机制——观测中编码运动趋势、奖励中融入短时碰撞风险、安全层升级为速度感知/观测条件化、策略学会从障碍物后方通过，并在长期走向模块化感知与三维全向避障。** 这为 Motion-Aware SEA-Nav 的设计提供了完整的学术支撑。
 
 ---
 
 ## 三、方法选择与路线设计
 
-### 3.1 四类方法的取舍分析
+### 3.1 五类方法的取舍分析
 
 | 方法类别 | 本周是否采用 | 理由 |
 |----------|:---:|------|
@@ -427,6 +419,7 @@ flowchart TB
 | CBF/Safety Filter | ✅ 采用 | 延续 SEA-Nav 已有 LSE-CBF，向 velocity-aware 扩展 |
 | Reach-Avoid/Recovery | ⏸ 暂缓 | 需要新增值网络训练，当前基座尚不稳定 |
 | GNN/Transformer | ⏸ 暂缓 | 当前障碍物是轨迹驱动的，无真实交互意图，过早引入会增加问题维度 |
+| 模块化感知 / 3D LiDAR | ⏸ 长期 | 当前先稳定 2D sparse LiDAR 基座，后续再扩展外感知估计器和 3D 全向感知 |
 
 ### 3.2 确定路线：Motion-Aware SEA-Nav
 
@@ -505,6 +498,48 @@ flowchart TD
 
     O1 --> O2["历史堆叠<br/>10 帧"]
     O2 --> O3["总观测维度<br/>83 × 10 = 830"]
+```
+
+**"4"的含义与 TopK 筛选机制：**
+
+`dynamic_token_k = 4`，即每步观测中保留的**最危险障碍物数量**，而非场景中障碍物的总数。场景中实际可同时存在 2~4 个动态障碍物，每步按紧迫性排序选出 Top 4 填入 token 槽位。
+
+```mermaid
+flowchart LR
+    A["实际障碍物<br/>2~4 个 active"] --> B["risk_score = TTC + 0.2×distance<br/>（越小越危险）"]
+    B --> C["torch.topk(largest=False)<br/>选出最紧迫的 4 个"]
+    C --> D["4 × 7 = 28 维<br/>填入观测 + 送入 CBF 层"]
+```
+
+**每个 token 的 7 维观测详解：**
+
+| 维度 | 字段 | 含义 | 计算方式 | 避障中的作用 |
+|:---:|------|------|----------|----------|
+| 0 | `rel_x` | 障碍物在机器人局部坐标系下的相对 x 位置 | 世界系 `obs_pos − robot_pos` 经 `yaw_quat` 旋转 | 空间感知：障碍物在哪个方向、多远 |
+| 1 | `rel_y` | 障碍物在机器人局部坐标系下的相对 y 位置 | 同上 | 同上 |
+| 2 | `rel_vx` | 相对速度（局部系 x 分量） | 世界系 `obs_vel − base_lin_vel` 经 `yaw_quat` 旋转 | 运动感知：正在靠近还是远离？ |
+| 3 | `rel_vy` | 相对速度（局部系 y 分量） | 同上 | 同上 |
+| 4 | `radius` | 障碍物碰撞半径 | 配置 `ray_radius`（默认 0.32m） | 安全边界：`d_safe = radius + safety_margin` |
+| 5 | `ttc` | 碰撞时间 Time-To-Collision | `−(Δp·Δv) / \|Δv\|²`，closing > 0 时有效，否则 10.0s | 紧迫性排序：TTC 越小越优先被 TopK 选中 |
+| 6 | `valid` | token 有效性标志 | `dynamic_active_mask` → float（0.0 / 1.0） | 存在性掩码：空槽位被 CBF 层跳过 |
+
+**为什么这 7 维构成完整的动态感知？**
+
+| 信息维度 | 解决的问题 | 设计原理 |
+|----------|-----------|---------|
+| `rel_x, rel_y` | "障碍物在哪？" | 局部坐标系编码保证策略对机器人朝向不变——"前方 1m"与绝对方位无关 |
+| `rel_vx, rel_vy` | "障碍物正在往哪动？多快？" | 动态避障区别于静态避障的核心维度——同一个距离下，靠近 vs 远离需要完全不同的策略响应 |
+| `radius` | "安全距离是多少？" | 配合 CBF 层 `h = ‖p_rel‖² − (radius + margin)²` 构造安全集边界 |
+| `ttc` | "多紧急？" | 让 TopK 排序优先保留"3 秒后可能碰撞"而非"10 秒外正在远离"的障碍物 |
+| `valid` | "这个 token 真的存在吗？" | 障碍物数量可变时，空槽位标记为 invalid，CBF 约束不激活 |
+
+**完整避障信息流：**
+
+```
+障碍物世界状态 → 转为机器人局部系(4维) + radius + TTC + valid
+    → TopK=4 按紧迫性排序 → 28维观测输入 Actor
+    → CBF Layer 对每个 valid token 做速度感知安全投影
+    → 输出安全动作 u_s
 ```
 
 ### 4.3 静态障碍物重新布局
@@ -997,22 +1032,22 @@ flowchart LR
 
 | 维度 | Run 1 | Run 2 | Run 3 |
 |------|-------|-------|-------|
-| **时间** | 06-20 05:14 | 06-20 07:23 | 06-21 04:28 |
-| **环境数** | 64 | 64 | 128 |
-| **难度** | Hard complex (初始) | Easy complex | Easy complex (+ 新奖励) |
-| **动态障碍** | 6-10, fast | 2-4, slow | 2-4, slow |
-| **训练迭代** | 500 | 500 | 500 |
-| **最终 success** | 0.00 | 0.29 | 0.54 (最佳 0.90) |
-| **episode length** | ~9 step | ~854 step | ~745 step (最佳) |
-| **核心问题** | contact 误触发 → 无效样本 | 近目标绕远 | 后段退化 |
-| **状态** | ❌ 失败 | ⚠️ 不稳定 | ⚠️ 有潜力，需稳定 |
+| 时间 | 06-20 05:14 | 06-20 07:23 | 06-21 04:28 |
+| 环境数 | 64 | 64 | 128 |
+| 难度 | Hard complex (初始) | Easy complex | Easy complex (+ 新奖励) |
+| 动态障碍 | 6-10, fast | 2-4, slow | 2-4, slow |
+| 训练迭代 | 500 | 500 | 500 |
+| 最终 success | 0.00 | 0.29 | 0.54 (最佳 0.90) |
+| episode length | ~9 step | ~854 step | ~745 step (最佳) |
+| 核心问题 | contact 误触发 → 无效样本 | 近目标绕远 | 后段退化 |
+| 状态 | ❌ 失败 | ⚠️ 不稳定 | ⚠️ 有潜力，需稳定 |
 
 ### 7.2 Run 3 训练过程详细数据
 
 | 窗口 | success | safe_success | dyn_coll | body_coll | pass_behind | TTG (s) |
 |------|:---:|:---:|:---:|:---:|:---:|:---:|
 | iter 200 | 0.6875 | 0.6875 | 0.1042 | 0.1875 | — | — |
-| **iter 400 (model_400)** | **0.8958** | **0.8958** | **0.0208** | **0.0833** | **+0.1614** | **16.30** |
+| iter 400 (model_400) | 0.8958 | 0.8958 | 0.0208 | 0.0833 | +0.1614 | 16.30 |
 | iter 490 (final) | 0.5417 | 0.2083 | 0.4583 | 0.8542 | -0.1172 | — |
 
 **关键发现：训练最佳窗口不在最后，而在 iter 400 附近。后段出现退化。**
@@ -1206,8 +1241,8 @@ SEA-Nav 的 CBF 让策略在训练早期不至于大量撞障碍，这是一个�
 
 | 阶段 | 问题 | 方法 | 证据 | 下一步 |
 |------|------|------|------|--------|
-| 文献归纳 | 动态避障到底缺什么？ | 归纳 VO/TTC、CBF、RA、GNN 四类机制 | 12 篇文献共同指向 motion-aware | 选择可落地机制 |
-| 机制选择 | 不能一次性堆大模型 | 保留 PPO+CBF，新增 token/动态 CBF/reward | 观测维度保持 830，接口稳定 | 后续再接 GNN/RA |
+| 文献归纳 | 动态避障到底缺什么？ | 归纳 VO/TTC、CBF、RA、GNN/Attention、模块化感知五类机制 | 12 篇文献共同指向 motion-aware | 选择可落地机制 |
+| 机制选择 | 不能一次性堆大模型 | 保留 PPO+CBF，新增 token/动态 CBF/reward | 观测维度保持 830，接口稳定 | 后续再接 GNN/RA/3D 感知 |
 | 环境诊断 | success=0 是算法失败吗？ | 加 reset reason、episode length | mean episode length 约 9 step | 修 contact reset |
 | 行为诊断 | model_500 为什么视频差？ | 人工看视频，抽象失败模式 | 近目标绕远、横穿障碍抢前方 | 设计 near-goal/pass-behind reward |
 | 验证 | reward 方向是否有效？ | 128 env / 500 iter 训练 + 图表 + 视频 | model_400 窗口显著提升 | 固定评估与消融 |
