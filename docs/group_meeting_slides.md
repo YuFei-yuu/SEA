@@ -10,14 +10,23 @@
 
 ### 1.1 SEA-Nav 原始架构与能力
 
-```
-观测(550维: 本体状态+41射线+目标方向, ×10历史帧)
-  → MLP历史编码器(16维隐变量)
-    → Backbone(512→256→128, ELU)
-      → 导航头 → u_bar [vx, vy, yaw_rate]
-      → Alpha头 → alpha (softplus, 固定)
-      → LSE-CBF安全层 → 修正为安全动作 u_s
-        → 低通滤波 → 运动策略JIT模型 → PD控制器 → 关节力矩
+```mermaid
+flowchart TD
+    A1["历史观测<br/>本体状态 + 41射线 + 目标方向<br/>×10 历史帧"]
+    A2["MLP 历史编码器<br/>16维隐变量"]
+    A3["Backbone<br/>512 → 256 → 128<br/>ELU"]
+    A4["导航头<br/>u_bar = [vx, vy, yaw_rate]"]
+    A5["Alpha 头<br/>alpha = softplus(obs)"]
+    A6["LSE-CBF 安全层<br/>修正为安全动作 u_s"]
+    A7["低通滤波"]
+    A8["运动策略 JIT 模型"]
+    A9["PD 控制器"]
+    A10["关节力矩"]
+
+    A1 --> A2 --> A3
+    A3 --> A4 --> A6
+    A3 --> A5 --> A6
+    A6 --> A7 --> A8 --> A9 --> A10
 ```
 
 **已实现能力：**
@@ -30,7 +39,7 @@
 | 维度 | 已具备 | 缺失 |
 |------|--------|------|
 | 障碍物运动信息 | 瞬时射线距离 | 相对速度、运动方向、未来轨迹 |
-| 安全层机制 | 静态 LSE-CBF（alpha 固定） | 动态约束、速度感知安全过滤 |
+| 安全层机制 | 静态 LSE-CBF（alpha 由历史观测输出） | 动态约束、速度感知安全过滤、motion-conditioned 调度 |
 | 观测编码 | MLP 展平历史向量 | 障碍物间空间关系、时序注意力 |
 | 奖励塑形 | 碰撞惩罚（事后） | 短时碰撞风险、让行方向引导 |
 | 训练策略 | collision-state replay | near-miss replay |
@@ -67,11 +76,16 @@
 |------|------|
 | **硬件平台** | 宇树 Go1 四足（与 Go2 同系列，Isaac Gym） |
 
-```
-方法架构：
-深度图 → 射线预测网络 → 11条稀疏射线 ─┬→ 敏捷策略 (v, ω) → 高速导航(最高3.1m/s)
-                                      ├→ RA值网络 V(s) → 策略切换信号
-                                      └→ 恢复策略 (v, ω) → 安全接管
+```mermaid
+flowchart LR
+    P1A["深度图"] --> P1B["射线预测网络"]
+    P1B --> P1C["11 条稀疏射线"]
+    P1C --> P1D["敏捷策略<br/>(v, ω)"]
+    P1C --> P1E["RA 值网络<br/>V(s)"]
+    P1C --> P1F["恢复策略<br/>(v, ω)"]
+    P1D --> P1G["高速导航<br/>最高 3.1 m/s"]
+    P1E --> P1H["策略切换信号"]
+    P1F --> P1I["安全接管"]
 ```
 
 **方法要点：** 敏捷策略负责高速目标导航，恢复策略在碰撞风险升高时接管。核心创新是**策略切换不靠硬编码规则，而由一个学习的 Reach-Avoid 值网络判断**——V(s) 学习预测"从当前状态用敏捷策略继续走，未来多久会撞"，这本质上是一个从数据中学习的安全证书，比手工设计的 CBF 更灵活，不需要预设屏障函数形式。
@@ -87,14 +101,20 @@
 | 作者/机构 | Zhan Gao, Amanda Prorok 等 / University of Cambridge |
 |------|------|
 
-```
-传统 CBF（SEA-Nav 当前）:
-  固定 alpha → CBF-Layer → 安全动作
+```mermaid
+flowchart LR
+    subgraph P2S1["传统 CBF（SEA-Nav 当前）"]
+        direction LR
+        P2A["通用观测编码"] --> P2B["alpha 输出"] --> P2C["CBF-Layer"] --> P2D["安全动作"]
+    end
 
-Online CBF（本文）:
-  RL策略(GNN) → 在线调整 CBF参数 → 自适应CBF-Layer → 安全动作
-      ↑
-  局部感知（障碍物位置/速度）
+    subgraph P2S2["Online CBF（本文）"]
+        direction LR
+        P2E["局部感知<br/>障碍物位置 / 速度"] --> P2F["RL 策略 / GNN"]
+        P2F --> P2G["在线调整 CBF 参数"]
+        P2G --> P2H["自适应 CBF-Layer"]
+        P2H --> P2I["安全动作"]
+    end
 ```
 
 **方法要点：** 传统 CBF 的固定参数在动态环境中要么太保守（freezing robot problem——机器人永远绕行到不了目标），要么太激进（碰撞）。本文提出用 RL 学习一个 CBF 参数调度策略——观察局部障碍物分布，实时决定 CBF 应该保守还是激进，实现"稀疏环境自动放松、拥挤环境自动收紧"。
@@ -110,18 +130,17 @@ Online CBF（本文）:
 | 作者/机构 | Shuijing Liu, Katherine Driggs-Campbell 等 / UIUC |
 |------|------|
 
-```
-方法架构：
-观测序列 → 异质时空图构建
-                │
-    ┌───────────┼───────────┐
-    │           │           │
- Robot↔Human  Human↔Human  Obstacle↔Agent
-   (预测+让行)  (人群内部交互)  (仅需避让)
-    │           │           │
-    └───────────┼───────────┘
-                │
-    多注意力头 Transformer → GRU 时序 → PPO 策略输出
+```mermaid
+flowchart TD
+    P3A["观测序列"] --> P3B["异质时空图构建"]
+    P3B --> P3C["Robot-Human<br/>预测 + 让行"]
+    P3B --> P3D["Human-Human<br/>人群内部交互"]
+    P3B --> P3E["Obstacle-Agent<br/>保持距离"]
+    P3C --> P3F["多注意力头 Transformer"]
+    P3D --> P3F
+    P3E --> P3F
+    P3F --> P3G["GRU 时序建模"]
+    P3G --> P3H["PPO 策略输出"]
 ```
 
 **方法要点：** 传统方法（包括 SEA-Nav）将所有障碍物同质化处理——射线近即危险。HEIGHT 首次区分了三种异质交互：Robot↔Human（需预测意图并主动让行）、Human↔Human（人群内部的交互影响群体运动）、Obstacle↔Agent（静态障碍物只需保持距离）。用多注意力头 Transformer 同时建模空间和时间维度，不同注意力头可分别关注"最近的障碍物"、"最快靠近的障碍物"、"人群密度最高的方向"。
@@ -137,13 +156,12 @@ Online CBF（本文）:
 | 作者/机构 | Jorge de Heuvel, Maren Bennewitz 等 / University of Bonn |
 |------|------|
 
-```
-方法架构：
-LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目标(x,y)
-                                                                    │
-                                                              Motion Agent
-                                                                    │
-                                                            电机控制指令
+```mermaid
+flowchart LR
+    P4A["LiDAR 扫描<br/>1080 点"] --> P4B["Self-Attention 编码"]
+    P4B --> P4C["Subgoal Agent<br/>输出子目标 (x, y)"]
+    P4C --> P4D["Motion Agent"]
+    P4D --> P4E["电机控制指令"]
 ```
 
 **方法要点：** 将导航拆为两层——Subgoal Agent 选"往哪走"，Motion Agent 负责"怎么走"，两个 agent 独立训练组合使用。核心机制是在 LiDAR 时间序列上做 Self-Attention：策略不需要被显式告知"第 30 条射线对应一个正在靠近的障碍物"，attention 权重会自动在"快速变近的方向"上聚集。
@@ -159,16 +177,13 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 | 作者/机构 | Milan Ganai, Sylvia L. Herbert 等 / UC San Diego |
 |------|------|
 
-```
-理论关系：
-  HJ 可达性（严格安全区域划分）
-      ↓ 简化/保守近似
-  CBF（屏障函数保证前向不变性）
-      ↓ 当前实现
-  SEA-Nav LSE-CBF（瞬时距离约束，固定alpha）
-
-升级方向：
-  学习HJ值函数 → 预测未来N步的安全区域 → 约束策略或在线修正（112维状态空间）
+```mermaid
+flowchart TD
+    P5A["HJ 可达性<br/>严格安全区域划分"] --> P5B["CBF<br/>屏障函数保证前向不变性"]
+    P5B --> P5C["SEA-Nav LSE-CBF<br/>瞬时距离约束"]
+    P5A --> P5D["学习 HJ 值函数"]
+    P5D --> P5E["预测未来 N 步安全区域"]
+    P5E --> P5F["约束策略或在线修正<br/>支持高维状态空间"]
 ```
 
 **方法要点：** 从理论上建立了 CBF 与 HJ 可达性的关系——CBF 是 HJ 可达性的一种简化保守近似，是 HJ 的充分条件而非必要条件。传统 HJ 受限于维度灾难（~6D），最新进展通过学习 HJ 值函数扩展到 112 维，使高维 RL 策略的安全验证成为可能。
@@ -184,6 +199,20 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 | 作者/机构 | H. Le, S. Saeedvand, C.C. Hsu |
 |------|------|
 
+```mermaid
+flowchart TD
+    P6A["拥挤环境 DRL 方法库<br/>DQN / DDQN / DDPG / SAC / PPO / A3C"] --> P6B["五维分类框架"]
+    P6B --> P6C["传感器融合"]
+    P6B --> P6D["社交感知"]
+    P6B --> P6E["层次化"]
+    P6B --> P6F["安全约束"]
+    P6B --> P6G["注意力机制"]
+    P6B --> P6H["开放问题归纳"]
+    P6H --> P6I["奖励平衡"]
+    P6H --> P6J["形式化安全保证"]
+    P6H --> P6K["复杂真实动态场景"]
+```
+
 **方法要点：** 覆盖 DQN/DDQN/DDPG/SAC/PPO/A3C 在拥挤环境中的应用，从传感器融合、社交感知、层次化、安全约束、注意力机制五个维度对现有方法进行分类。核心贡献是系统指出了领域的开放问题。
 
 **创新点：** (1) 五维分类框架为方法定位提供了坐标系；(2) 明确指出**五个开放问题**——其中"奖励函数设计：如何平衡安全、效率、平滑性"和"安全性保证：学习策略缺乏形式化安全保证"直接对应本项目的核心挑战；(3) 指出"简单往复运动 ≠ 真实动态场景"，论证了构建复杂场景的必要性。
@@ -196,6 +225,16 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 
 | 作者 | — |
 |------|------|
+
+```mermaid
+flowchart LR
+    P7A["短历史 LiDAR"] --> P7D["RL 策略训练"]
+    P7B["行人运动学信息"] --> P7D
+    P7C["sub-goal"] --> P7D
+    P7V["VO / TTC 风险奖励"] --> P7D
+    P7D --> P7E["拥挤场景动态避障"]
+    P7E --> P7F["真实机器人零重训迁移"]
+```
 
 **方法要点：** 用短历史 LiDAR、附近行人运动学信息和 sub-goal 作为输入，在 RL reward 中显式加入 Velocity Obstacle 项——将传统 VO 算法中对碰撞风险的度量转化为奖励信号。实验包含最多 55 个行人的拥挤场景，实现了**真实机器人零重训迁移**（sim 训练后直接在真实机器人上运行，不需要额外 fine-tuning）。
 
@@ -210,6 +249,16 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 | 作者 | — |
 |------|------|
 
+```mermaid
+flowchart TD
+    P8A["机器人-人群时空观测"] --> P8B["Recurrent GNN + Attention"]
+    P8B --> P8C["未来轨迹预测"]
+    P8B --> P8D["交互特征编码"]
+    P8C --> P8E["Model-free RL 决策"]
+    P8D --> P8E
+    P8E --> P8F["预期性动态导航"]
+```
+
 **方法要点：** 用 recurrent graph neural network + attention 建模机器人-人群之间的时空交互，并**预测动态 agent 的未来轨迹**，将预测结果接入 model-free RL，避免机器人闯入他人的预期路径。核心思想是"不仅要看人在哪里，还要预测人将要走到哪里"。
 
 **创新点：** (1) 将轨迹预测与导航决策统一在一个框架中——传统做法是分开的（先预测再规划），本文让预测为决策提供特征；(2) 注意力图网络天然适合建模"机器人-障碍物"和"障碍物-障碍物"的双重交互；(3) 预测信息的融入使策略具有"预期性"——提前绕行而非被动反应。
@@ -222,6 +271,15 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 
 | 作者 | — |
 |------|------|
+
+```mermaid
+flowchart LR
+    P9A["静态 + 动态障碍观测"] --> P9B["PPO 策略"]
+    P9B --> P9C["nominal action"]
+    P9C --> P9D["VO-inspired safety shield"]
+    P9D --> P9E["安全动作"]
+    P9E --> P9F["动态环境导航"]
+```
 
 **方法要点：** 用 PPO 学习 UAV 在静态与动态障碍中的导航，引入受 Velocity Obstacles 启发的 **safety shield**——RL 策略输出导航决策，安全层在最后兜底，减少神经网络黑箱策略的失败。这是"RL + safety layer"架构在动态环境中的直接验证。
 
@@ -236,11 +294,19 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 | 作者 | — |
 |------|------|
 
+```mermaid
+flowchart LR
+    P10A["LiDAR 观测"] --> P10C["Observation-conditioned<br/>Reachability Safety Filter"]
+    P10B["Nominal controller"] --> P10C
+    P10C --> P10D["必要时覆盖控制"]
+    P10D --> P10E["未知环境安全导航"]
+```
+
 **方法要点：** 提出 **observation-conditioned reachability-based safety filter**——用 LiDAR 输入**动态构造安全区域**，在必要时覆盖 nominal controller。与固定 CBF 不同，安全区域是根据当前 LiDAR 观测实时计算的，因此可以适应未知环境中的动态变化。
 
 **创新点：** (1) observation-conditioned 是相对于 state-conditioned 的重要进步——不需要完整状态信息，直接从原始传感器观测计算安全区域；(2) 适用于不同四足控制器——是一个"即插即用"的安全层；(3) 未知环境中验证——不要求环境地图或障碍物模型已知。
 
-**对 SEA-Nav 的启发：** 适合做 SEA-Nav 安全层的下一阶段升级——将固定 alpha 的 LSE-CBF 升级为以观测（射线+token）为条件的动态安全过滤器。安全裕度不再是全局参数，而是根据局部环境实时计算的。
+**对 SEA-Nav 的启发：** 适合做 SEA-Nav 安全层的下一阶段升级——将当前 LSE-CBF 升级为以观测（射线+token）为条件的动态安全过滤器。安全裕度不再是全局固定配置，而是根据局部环境实时计算的。
 
 ---
 
@@ -248,6 +314,18 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 
 | 作者 | — |
 |------|------|
+
+```mermaid
+flowchart TD
+    P11A["LiDAR 点云"] --> P11B["Transformer-based<br/>Exteroceptive Estimator"]
+    P11B --> P11C["Locomotion policy"]
+    P11B --> P11D["Safety shielding policy"]
+    P11B --> P11E["Navigation policy"]
+    P11C --> P11F["模块化组合执行"]
+    P11D --> P11F
+    P11E --> P11F
+    P11F --> P11G["复杂动态环境安全导航"]
+```
 
 **方法要点：** 面向复杂动态环境的四足反应式安全导航系统，包含 **locomotion + safety shielding + navigation** 三个 RL policy，加上处理 LiDAR 点云的 **transformer-based exteroceptive estimator**。模块化设计将整体导航问题分解为可独立优化和组合的子问题。
 
@@ -261,6 +339,16 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 
 | 作者 | — |
 |------|------|
+
+```mermaid
+flowchart TD
+    P12A["时序 3D LiDAR 点云"] --> P12B["PD-RiskNet"]
+    P12B --> P12C["近端风险<br/>立即反应"]
+    P12B --> P12D["远端风险<br/>提前规划"]
+    P12C --> P12E["端到端控制策略"]
+    P12D --> P12E
+    P12E --> P12F["四足全向动态避障"]
+```
 
 **方法要点：** 用时序 3D LiDAR 点云做端到端四足全向避障，提出 **PD-RiskNet** 分别处理近端风险（需要立即反应）和远端风险（需要提前规划）。支持 Isaac Gym 等仿真平台，将深度学习方法引入 LiDAR 点云的全向动态避障。
 
@@ -281,24 +369,48 @@ LiDAR扫描(1080点)  →  Self-Attention编码  →  Subgoal Agent → 子目�
 
 ### 2.4 交叉验证：12 篇文献的共同指向
 
-```
-          VO/TTC奖励  CBF重建层  RA值网络  GNN/Attention
-              │          │         │          │
-DRL-VO        ●          ○         ○          ○
-NavRL         ●          ●         ○          ○
-Online CBF    ○          ●         ○          ●
-One Filter    ○          ●         ●          ○
-REASAN        ○          ●         ○          ●
-AgileButSafe  ○          ○         ●          ○
-HEIGHT        ○          ○         ○          ●
-CrowdNav      ○          ○         ○          ●
-SubgoalAttn   ○          ○         ○          ●
-HJ Survey     ○          ●         ●          ○
-DRL Survey    ●          ●         ●          ●
-OmniPercept   ○          ○         ○          ●
-────────────────────────────────────────────
-汇合结论:    观测+TTC   动态CBF   学习安全   结构编码
-            reward     安全层    值网络     观测
+```mermaid
+flowchart TB
+    subgraph C1["观测 + TTC reward"]
+        direction TB
+        C1A["DRL-VO"] --> C1M["结构先验融入观测与奖励"]
+        C1B["NavRL"] --> C1M
+        C1C["DRL Survey"] --> C1M
+    end
+
+    subgraph C2["动态 CBF / Safety Filter"]
+        direction TB
+        C2A["Online CBF"] --> C2M["速度感知安全层"]
+        C2B["One Filter"] --> C2M
+        C2C["REASAN"] --> C2M
+        C2D["NavRL"] --> C2M
+        C2E["HJ Survey"] --> C2M
+        C2F["DRL Survey"] --> C2M
+    end
+
+    subgraph C3["学习安全值网络"]
+        direction TB
+        C3A["Agile But Safe"] --> C3M["未来碰撞风险预测"]
+        C3B["One Filter"] --> C3M
+        C3C["HJ Survey"] --> C3M
+        C3D["DRL Survey"] --> C3M
+    end
+
+    subgraph C4["结构化交互编码"]
+        direction TB
+        C4A["HEIGHT"] --> C4M["GNN / Attention 编码"]
+        C4B["CrowdNav"] --> C4M
+        C4C["Subgoal-Attention"] --> C4M
+        C4D["Omni-Perception"] --> C4M
+        C4E["Online CBF"] --> C4M
+        C4F["REASAN"] --> C4M
+        C4G["DRL Survey"] --> C4M
+    end
+
+    C1M --> C5["汇合结论<br/>观测编码运动趋势 + TTC reward"]
+    C2M --> C6["汇合结论<br/>动态 CBF / Safety Filter"]
+    C3M --> C7["汇合结论<br/>学习安全值网络"]
+    C4M --> C8["汇合结论<br/>结构化交互建模"]
 ```
 
 十二条文献从不同角度汇聚到同一个判断：**动态避障的核心不是仿真中加 moving actor，而是四件事——观测中编码运动趋势、奖励中融入短时碰撞风险、安全层升级为速度感知、策略学会从障碍物后方通过。** 这为 Motion-Aware SEA-Nav 的设计提供了完整的学术支撑。
@@ -371,32 +483,28 @@ flowchart TD
 
 ### 4.1 从简单到复杂的演进路径
 
-```
-第二周：go2_pos_dynamic_1/2/3
-  ├── 1-3 个简单纵向往复障碍物
-  ├── 验证系统在基本动态场景下可以训练和避障
-  └── 基础验证
-
-第三周：go2_pos_dynamic_complex
-  ├── 2-4 个多运动模式动态障碍物
-  ├── 19 个静态障碍物（重新布局，均匀分布）
-  ├── 四种运动模式 + episode 预生成轨迹
-  └── 面向复杂环境的完整训练诊断链路
-```
+| 阶段 | 环境/任务 | 关键配置 | 目标定位 |
+|------|-----------|----------|----------|
+| 第二周 | `go2_pos_dynamic_1/2/3` | 1-3 个简单纵向往复障碍物 | 验证系统在基本动态场景下可以训练和避障 |
+| 第三周 | `go2_pos_dynamic_complex` | 2-4 个多运动模式动态障碍物 | 从简单动态障碍扩展到复杂动态环境 |
+| 第三周 | `go2_pos_dynamic_complex` | 19 个静态障碍物重新布局、均匀分布 | 消除外圈通道，提升场景覆盖度 |
+| 第三周 | `go2_pos_dynamic_complex` | 四种运动模式 + episode 预生成轨迹 | 提升动态行为复杂性与可复现性 |
+| 第三周 | `go2_pos_dynamic_complex` | 完整训练诊断链路 | 支撑复杂环境下的问题定位与迭代 |
 
 ### 4.2 观测空间设计
 
-```
-单帧观测 (83 维):
-┌──────────────┬────────────┬────────┬─────────────────────┐
-│ body state   │ 41 rays    │ goal   │ 4 dynamic tokens    │
-│ 12 维         │ 41 维       │ 2 维    │ 4×7=28 维            │
-│ (v,ω,RPY,    │ (-120°~    │ (dx,dy)│ [rel_x, rel_y,      │
-│  cmd...)     │  +120°)    │        │  rel_vx, rel_vy,    │
-│              │            │        │  radius, ttc, valid] │
-└──────────────┴────────────┴────────┴─────────────────────┘
+```mermaid
+flowchart TD
+    subgraph O1["单帧观测：83 维"]
+        direction LR
+        O1A["body state<br/>12 维<br/>v, w, RPY, cmd..."]
+        O1B["41 rays<br/>41 维<br/>-120° ~ +120°"]
+        O1C["goal<br/>2 维<br/>(dx, dy)"]
+        O1D["4 dynamic tokens<br/>28 维 = 4 × 7<br/>[rel_x, rel_y, rel_vx, rel_vy, radius, ttc, valid]"]
+    end
 
-总观测 = 83 × 10 帧历史 = 830 维
+    O1 --> O2["历史堆叠<br/>10 帧"]
+    O2 --> O3["总观测维度<br/>83 × 10 = 830"]
 ```
 
 ### 4.3 静态障碍物重新布局
@@ -442,7 +550,7 @@ dynamic_traj_step [num_envs, max_obstacles]
 | 维度 | 推翻重建 | 保留+扩展（选择） |
 |------|---------|-----------------|
 | 风险 | 新架构+新环境同时调试，问题来源难区分 | 每次只引入一项新机制，可逐个验证 |
-| 继承性 | 丢弃已验证的静态 CBF 安全保证 | 静态 CBF 仍然保护静态避障，动态 CBF 仅补充动态场景 |
+| 继承性 | 需要重新验证静态与动态安全约束的一致性 | 静态 CBF 仍然保护静态避障，动态 CBF 仅补充动态场景 |
 | 可解释性 | 新模块的黑箱更难解释行为 | 串行管线每一步都可独立观察和分析 |
 
 **核心工程哲学**：复杂系统中，当基座本身（复杂动态环境）尚未稳定时，不应同时替换上层建筑（网络架构）。
@@ -489,7 +597,7 @@ flowchart TD
 |----------|------------------------|-------------------|
 | 语义分工 | 静态CBF处理"空间是否被占据"——位置层硬约束；动态CBF处理"运动是否危险"——速度层软约束，各司其职 | 两个安全层可能对同一动作给出互相矛盾的修正方向，导致投影求解不稳定 |
 | 优先级 | 静态碰撞是最高优先级的硬约束，必须先行保证 | 无法区分优先级，动态约束可能与静态约束冲突 |
-| 继承性 | 丢弃已验证的静态 CBF 安全保证 | 静态 CBF 仍然保护静态避障，动态 CBF 仅补充动态场景 |
+| 继承性 | 静态安全层作为第一道约束被保留 | 并行约束需要重新处理静态/动态约束冲突和优先级 |
 | 可解释性 | 新模块的黑箱更难解释行为 | 串行管线每一步都可独立观察和分析 |
 
 **设计逻辑：** 先保证不撞静态障碍物（位置硬约束），再保证不撞动态障碍物（速度软约束）。两层 CBF 各自独立求解二次规划投影，互不干扰，保证数值稳定性。
@@ -716,7 +824,7 @@ reward = 4.0 * max(0, radial_vel)                  # 仅奖励正向径向速度
 
 ```
 dist_to_goal_current - dist_to_goal_previous > 0  → 正在远离目标
-lenalty = -5.0                                    → 直接惩罚
+penalty = -5.0                                    → 直接惩罚
 ```
 
 **设计意图**：针对"到了目标旁边又走出去"的行为。这是视频中观察到的最高频失败模式——机器人到达目标 1m 范围内，然后一个绕行动作又走远了。
@@ -853,6 +961,38 @@ CBF 新边界: distance < 0.32 + 0.35 = 0.67
 
 ## 七、训练实验全景
 
+### 7.0 本周实际完成的工程闭环
+
+本周不是单点改动，而是完成了一条可复用的复杂动态避障实验链路：
+
+```mermaid
+flowchart LR
+    W1["文献调研"]
+    W2["机制选择<br/>VO/TTC + Dynamic CBF + pass-behind reward"]
+    W3["环境重构<br/>complex room + episode 预生成动态轨迹"]
+    W4["安全层扩展<br/>Static LSE-CBF → DynamicTokenCBFLayer"]
+    W5["奖励修复<br/>near-goal 收敛 + pass-behind 方向引导"]
+    W6["诊断日志<br/>reset reason + CBF intervention + action-goal alignment"]
+    W7["训练分析<br/>train_metrics.csv + analysis/*.png"]
+    W8["视频验证<br/>model_500 / model_400 各 10 episodes"]
+    W9["下一阶段消融计划"]
+
+    W1 --> W2 --> W3 --> W4 --> W5 --> W6 --> W7 --> W8 --> W9
+```
+
+**工作量落点：**
+
+| 模块 | 本周完成内容 | 作用 |
+|------|-------------|------|
+| 环境 | `go2_pos_dynamic_complex` 多动态障碍 + 19 个静态障碍重新布局 | 构建真正复杂的训练场景 |
+| 轨迹 | episode 预生成动态障碍物轨迹 | 解决卡顿、抖动和 PhysX 接触干扰 |
+| 观测 | 830 维历史观测 + 4 个 dynamic token | 显式编码相对速度/TTC |
+| 安全层 | velocity-aware DynamicTokenCBFLayer | 把 CBF 从静态距离约束扩展到动态速度约束 |
+| 奖励 | near-goal 五项奖励 + pass-behind 奖励 | 解决近目标绕远和让行方向错误 |
+| 日志 | 新增 10+ 个训练诊断字段 | 支持从结果到机制的逐层归因 |
+| 可视化 | 自动生成 success/safety/CBF/direction/reward 图 | 训练后可解释分析 |
+| 视频 | `model_500` 与 `model_400` 录像 | 人工验证曲线外的真实行为 |
+
 ### 7.1 三次训练 Run 对照
 
 | 维度 | Run 1 | Run 2 | Run 3 |
@@ -877,61 +1017,87 @@ CBF 新边界: distance < 0.32 + 0.35 = 0.67
 
 **关键发现：训练最佳窗口不在最后，而在 iter 400 附近。后段出现退化。**
 
+### 7.3 训练曲线证据：主图与诊断图
+
+> 以下图片均来自 `training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_/analysis/`，可以直接用于投屏。建议主讲前三张，后两张作为诊断补充或 Q&A 备用。
+
+#### 图 1：成功率与安全成功率曲线
+
+![Run 3 success and safe success](../training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_/analysis/rl_success_rates.png)
+
+**图示解读：**
+
+- success 从训练初期接近 0 上升到 0.8 以上，说明奖励函数和环境重构后，策略确实学到了可用导航行为。
+- safe_success 在 2.4M timesteps 附近达到高点，之后明显回落，说明不是“训练越久越好”，必须做 checkpoint selection。
+- timeout 后期接近 0，说明失败主要不是“走不动超时”，而是安全性和接触问题。
+
+#### 图 2：动态让行方向与未来安全裕度
+
+![Run 3 dynamic direction](../training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_/analysis/dynamic_direction.png)
+
+**图示解读：**
+
+- `pass_behind_score` 在 model_400 附近转为正值，对应训练表中 `+0.1614`，说明 dynamic_avoid_direction_reward 对横穿障碍让行方向有正向作用。
+- 训练后段 pass-behind 又回落到负值附近，对应最终 safe_success 下降，说明该奖励方向有效但还不稳定。
+- `future_dynamic_clearance` 和 `min_dynamic_clearance` 在中后段整体抬升，说明 CBF 边界对齐和动态奖励提升了动态安全裕度。
+
+#### 图 3：碰撞与 near-miss 事件
+
+![Run 3 safety events](../training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_/analysis/safety_events.png)
+
+**图示解读：**
+
+- dynamic collision 在中后段有下降窗口，model_400 附近动态碰撞降到约 0.0208。
+- body collision 与 total collision 后段又出现反弹，解释了为什么 final checkpoint 不如 model_400。
+- near-miss 长期存在，说明策略仍频繁进入危险邻域，下一阶段不能只看 collision，还要围绕 near-miss replay 和 TTC 风险继续优化。
+
+#### 诊断补充图 4：CBF 介入率
+
+![Run 3 CBF intervention](../training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_/analysis/cbf_intervention.png)
+
+**图示解读：**
+
+- `shield_intervention_step_rate` 长期接近 1.0，说明静态安全层几乎每步都在修正动作。
+- `dynamic_cbf_intervention_step_rate` 约在 0.24-0.63 之间波动，说明动态 CBF 并非完全接管，而是在动态风险阶段发挥作用。
+- 后续要解决 nominal policy 对 CBF 的依赖，不能让安全层长期替 policy 做决策。
+
+#### 诊断补充图 5：动作-目标方向对齐
+
+![Run 3 action goal alignment](../training/legged_gym/logs/Go2_pos_dynamic_complex/06_21_04-28-54_/analysis/action_goal_alignment.png)
+
+**图示解读：**
+
+- `u_bar_goal_angle`、`u_static_goal_angle`、`u_safe_goal_angle` 三条曲线整体同步下降，说明 policy 输出和安全层修正后的动作都逐步更接近目标方向。
+- 三者之间差距不大，说明很多阶段不是 CBF 单独把动作改坏，而是 nominal policy 本身仍有方向偏差。
+- 该图支撑下一阶段的诊断思路：区分“policy 学偏”与“CBF 修正过强”。
+
 ---
 
 ## 八、排错过程深度分析
 
 ### 8.1 五个关键问题的发现-诊断-修复链
 
-```
-问题1: 训练过慢
-  ├── 现象: 64 env 训练明显卡顿
-  ├── 诊断: 在线采样中逐 env 逐 slot 的 Python 循环 + PhysX 接触求解
-  ├── 修复: episode 预生成轨迹 + 张量索引更新 + disable_simulation_contacts
-  └── 效果: 32 env / 200 step 正常运行，不再卡在初始化/推进循环
-
-问题2: 动态障碍物原地抖动
-  ├── 现象: 录像中障碍物几乎不运动，只在原地抖动
-  ├── 诊断: PhysX 接触求解干扰 + 在线反弹逻辑反复触发
-  ├── 修复: 完全由预生成轨迹驱动，inactive slot 统一放远处
-  └── 效果: 录像中可观察到平滑的四种运动模式
-
-问题3: success = 0（最关键的排错）
-  ├── 现象: 500 iterations 后 success_rate = 0, timeout_rate = 0
-  ├── 初判: 安全层太保守，策略不敢走？
-  ├── 深入: mean_episode_length ≈ 9 step, mean_duration ≈ 0.17s
-  │         → 策略不是"走了很久没到"，而是"刚开始就被 reset"
-  │         → PPO 几乎没有有效经验可以学习
-  ├── 根因: contact_force > 50 hard reset 对所有刚体检查，
-  │         足端落地/摩擦/初始化冲击也可能触发
-  ├── 修复: 收窄到 termination_contact_indices (base/head 等危险部位)
-  │         + hard_contact_warmup_steps = 10
-  └── 效果: 16 env / 30 step 冒烟: first_step_dones=0, contact50=0
-
-问题4: CBF 边界与碰撞阈值不一致
-  ├── 现象: 策略被 CBF 放行但仍发生动态碰撞
-  ├── 诊断: CBF 安全距离 0.32+0.20=0.52 < 碰撞阈值 0.65
-  ├── 修复: safety_margin 0.20 → 0.35, 实际安全距离 0.67 > 0.65
-  └── 效果: 消除了 CBF 与环境的矛盾信号
-
-问题5: Isaac Gym 退出 segfault (return code 139)
-  ├── 现象: 训练/评估结束后 Segmentation fault
-  ├── 诊断: checkpoint 已保存, metrics.csv 已写出, torch.load 可读
-  ├── 判定: Isaac Gym 析构/清理阶段问题，非 PPO 更新或 Python 逻辑错误
-  └── 处理: 记录但不影响训练结果
-```
+| 问题 | 现象 | 诊断 | 修复 | 效果 |
+|------|------|------|------|------|
+| 问题1：训练过慢 | 64 env 训练明显卡顿 | 在线采样中逐 env 逐 slot 的 Python 循环 + PhysX 接触求解 | episode 预生成轨迹 + 张量索引更新 + `disable_simulation_contacts` | 32 env / 200 step 正常运行，不再卡在初始化/推进循环 |
+| 问题2：动态障碍物原地抖动 | 录像中障碍物几乎不运动，只在原地抖动 | PhysX 接触求解干扰 + 在线反弹逻辑反复触发 | 完全由预生成轨迹驱动，inactive slot 统一放远处 | 录像中可观察到平滑的四种运动模式 |
+| 问题3：`success = 0` | 500 iterations 后 `success_rate = 0`, `timeout_rate = 0` | `mean_episode_length ≈ 9 step`, `mean_duration ≈ 0.17s`，说明不是走不动，而是刚开始就被 reset；根因是 `contact_force > 50` 对所有刚体检查，足端落地/摩擦/初始化冲击也可能触发 | 收窄到 `termination_contact_indices`（base/head 等危险部位）+ `hard_contact_warmup_steps = 10` | 16 env / 30 step 冒烟测试：`first_step_dones=0`, `contact50=0` |
+| 问题4：CBF 边界与碰撞阈值不一致 | 策略被 CBF 放行但仍发生动态碰撞 | CBF 安全距离 `0.32 + 0.20 = 0.52 < 0.65` 碰撞阈值 | `safety_margin 0.20 → 0.35`，实际安全距离 `0.67 > 0.65` | 消除了 CBF 与环境的矛盾信号 |
+| 问题5：Isaac Gym 退出 segfault | 训练/评估结束后 Segmentation fault | checkpoint 已保存、`metrics.csv` 已写出、`torch.load` 可读，判断为 Isaac Gym 析构/清理阶段问题 | 记录问题，不作为当前训练阻塞项 | 不影响训练结果使用 |
 
 ### 8.2 方法论启示
 
 **不能只看最终 success_rate，必须看诊断指标链：**
 
-```
-success=0
-  → mean_episode_length 是多少？
-    → 如果极短 (< 20 step)，是 reset 太频繁
-      → 检查 reset reason
-        → 是 collision 还是 contact 还是 timeout？
-          → Run 1 中是 contact_force 误触发
+```mermaid
+flowchart TD
+    M1["success = 0"] --> M2["mean_episode_length 是多少？"]
+    M2 --> M3{"是否极短<br/>&lt; 20 step"}
+    M3 -- 是 --> M4["reset 太频繁"]
+    M4 --> M5["检查 reset reason"]
+    M5 --> M6{"collision / contact / timeout ?"}
+    M6 --> M7["Run 1: contact_force 误触发"]
+    M3 -- 否 --> M8["继续检查奖励 / 安全层 / 策略行为"]
 ```
 
 这是本周最重要的工程方法论收获：**复杂 RL 任务中，诊断指标是把"训练失败"转化为"可解释问题"的前提。**
@@ -961,10 +1127,10 @@ model_500 固定评估 (40 episodes):
 
 ```
 model_400 训练窗口 (iteration 400):
-  success:             0.8958  (+123%)
-  safe_success:        0.8958  (+225%)
-  dyn_collision_count: 0.0208  (-93%)
-  body_collision:      0.0833  (-88%)
+  success:             0.8958
+  safe_success:        0.8958
+  dyn_collision_count: 0.0208
+  body_collision:      0.0833
   pass_behind_score:  +0.1614  (正值！)
   time_to_goal:       16.30 s
 
@@ -972,6 +1138,8 @@ model_400 训练窗口 (iteration 400):
   成功 6 / 失败 4
   动态碰撞仅出现在第 4 个 episode
 ```
+
+> 注意：这里是训练窗口指标，不是严格固定评估。它说明 reward 方向和 checkpoint 选择有价值，但下一步仍必须跑 `50 episodes` 固定评估。
 
 ### 9.3 两个残留问题
 
@@ -996,7 +1164,7 @@ shield_intervention_step_rate ≈ 0.99
 这意味着 99% 的时间步中静态 CBF 都在修正 nominal action。实际执行的动作大量来自安全层修正，而非 policy 自己学会了安全动作。长期而言会导致：
 
 - 到达效率低（安全层只保证安全，不保证效率）
-- 目标附近绕远（CBF 约束在目标附近变成障碍）
+- 目标附近绕远（目标推进可能被安全修正和局部障碍约束压制）
 - 动态让行方向不稳定（CBF 不知道从哪边绕）
 
 ### 9.4 诊断指标的价值验证
@@ -1034,39 +1202,34 @@ SEA-Nav 的 CBF 让策略在训练早期不至于大量撞障碍，这是一个�
 
 本周没有引入 GNN、Transformer 或 Reach-Avoid value network，但 dynamic token 可以接 attention encoder，near-miss replay 可以扩展为 recovery policy 训练，velocity-aware CBF 可以升级为 observation-conditioned safety filter。当前工作是工程基座，也是后续研究路线的起点。
 
-### 10.2 下一步八步计划
+### 10.2 本周研究思维闭环
 
-```
-A0: 固定评估 model_300/400/500 → 确认真实最佳 checkpoint
-    ├── 每个 checkpoint 50 episodes
-    └── 重点看 safe_success, pass_behind, dynamic_collision
+| 阶段 | 问题 | 方法 | 证据 | 下一步 |
+|------|------|------|------|--------|
+| 文献归纳 | 动态避障到底缺什么？ | 归纳 VO/TTC、CBF、RA、GNN 四类机制 | 12 篇文献共同指向 motion-aware | 选择可落地机制 |
+| 机制选择 | 不能一次性堆大模型 | 保留 PPO+CBF，新增 token/动态 CBF/reward | 观测维度保持 830，接口稳定 | 后续再接 GNN/RA |
+| 环境诊断 | success=0 是算法失败吗？ | 加 reset reason、episode length | mean episode length 约 9 step | 修 contact reset |
+| 行为诊断 | model_500 为什么视频差？ | 人工看视频，抽象失败模式 | 近目标绕远、横穿障碍抢前方 | 设计 near-goal/pass-behind reward |
+| 验证 | reward 方向是否有效？ | 128 env / 500 iter 训练 + 图表 + 视频 | model_400 窗口显著提升 | 固定评估与消融 |
+| 反思 | 为什么 final 又退化？ | 对比 iter 400 vs 490 | safe_success 回落、pass_behind 变负 | 稳定训练、checkpoint selection |
 
-A1: 复现验证 → 最佳配置 3 个随机种子
-    └── 确认 model_400 优势是否可复现
+**核心观点：** 本周不是简单调参，而是把每个现象转化为可检验假设，再用日志、图表和视频验证假设。
 
-A2: 近目标奖励消融 → 每次只动一个权重
-    └── 观察近目标绕远是否下降
+### 10.3 下一步八步计划
 
-A3: pass-behind 奖励消融 → 每次只动一个权重
-    └── 观察横穿障碍让行方向是否改善
+| 步骤 | 任务 | 执行动作 | 关注指标 / 目标 |
+|------|------|----------|-----------------|
+| A0 | 固定评估 `model_300/400/500` | 每个 checkpoint 跑 50 episodes | 确认真实最佳 checkpoint；重点看 `safe_success`、`pass_behind`、`dynamic_collision` |
+| A1 | 复现验证 | 最佳配置跑 3 个随机种子 | 确认 `model_400` 优势是否可复现 |
+| A2 | 近目标奖励消融 | 每次只动一个权重 | 观察近目标绕远是否下降 |
+| A3 | `pass-behind` 奖励消融 | 每次只动一个权重 | 观察横穿障碍让行方向是否改善 |
+| A4 | 训练稳定性优化 | 降低后半程学习率 / 保存更密集 checkpoint | 解决后段退化问题 |
+| A5 | Easy complex 固定评估对比 | 在达到验收条件后开展正式对比 | `safe_success ≥ 0.45`，`dyn_collision ≤ 0.25` |
+| A6 | 开启 near-miss replay | 从 `collision-state replay` 扩展到 `TTC-based near-miss replay` | 提升危险邻域样本利用率 |
+| A7 | 进入 Medium curriculum | near-miss replay 稳定后切换到 3-5 个动态障碍物 + 中等速度 | 逐步提升场景难度 |
+| A8 | 长期研究扩展 | 引入 `GNN/Attention encoder`、`Reach-Avoid value network`、`observation-conditioned safety filter` | 形成下一阶段研究路线 |
 
-A4: 训练稳定性 → 降低后半程学习率 / 保存更密集 checkpoint
-    └── 解决后段退化问题
-
-A5: 达到 Easy complex 验收后进行固定评估对比
-    └── safe_success ≥ 0.45, dyn_collision ≤ 0.25
-
-A6: 开启 near-miss replay
-    └── 从 collision-state replay 扩展到 TTC-based near-miss replay
-
-A7: Near-miss replay 稳定后进入 Medium curriculum
-    └── 3-5 个动态障碍物 + 中等速度
-
-A8: 长期研究扩展
-    └── GNN/Attention encoder, Reach-Avoid value network, observation-conditioned safety filter
-```
-
-### 10.3 验收标准
+### 10.4 验收标准
 
 | 阶段 | 指标 | 目标值 |
 |------|------|--------|
