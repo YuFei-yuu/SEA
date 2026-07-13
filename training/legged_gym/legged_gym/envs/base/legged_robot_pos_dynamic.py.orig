@@ -214,31 +214,6 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
         self.dynamic_actor_indices = torch.zeros(
             self.num_envs, self.dynamic_obs_count, dtype=torch.long, device=self.device
         )
-        self.depth_camera_enabled = bool(
-            getattr(getattr(self.cfg, "sensors", None), "depth_cam", None)
-            and getattr(self.cfg.sensors.depth_cam, "enable", False)
-        )
-        if self.depth_camera_enabled:
-            depth_cfg = self.cfg.sensors.depth_cam
-            self.camera_handles = []
-            self.camera_tensors = []
-            self.cam_obs = torch.full(
-                (self.num_envs, depth_cfg.resolution[1], depth_cfg.resolution[0]),
-                float(depth_cfg.max_),
-                device=self.device,
-            )
-            camera_props = gymapi.CameraProperties()
-            camera_props.enable_tensors = True
-            camera_props.width = depth_cfg.resolution[0]
-            camera_props.height = depth_cfg.resolution[1]
-            camera_props.far_plane = depth_cfg.far_plane
-            camera_props.horizontal_fov = depth_cfg.hfov
-            camera_transform = gymapi.Transform()
-            camera_transform.p = gymapi.Vec3(depth_cfg.x, depth_cfg.y, depth_cfg.z)
-            pitch = math.radians(float(getattr(depth_cfg, "pitch_deg", 0.0)))
-            camera_transform.r = gymapi.Quat(
-                0.0, math.sin(pitch * 0.5), 0.0, math.cos(pitch * 0.5)
-            )
 
         self.gym.set_light_parameters(
             self.sim,
@@ -319,16 +294,6 @@ class LeggedRobotPosDynamic(LeggedRobotPos):
                     env_handle, dyn_handle, gymapi.DOMAIN_SIM
                 )
             self.dynamic_actor_handles.append(env_dynamic_handles)
-            if self.depth_camera_enabled:
-                camera_handle = self.gym.create_camera_sensor(env_handle, camera_props)
-                self.gym.attach_camera_to_body(
-                    camera_handle, env_handle, actor_handle, camera_transform, gymapi.FOLLOW_TRANSFORM
-                )
-                self.camera_handles.append(camera_handle)
-                camera_tensor = self.gym.get_camera_image_gpu_tensor(
-                    self.sim, env_handle, camera_handle, gymapi.IMAGE_DEPTH
-                )
-                self.camera_tensors.append(gymtorch.wrap_tensor(camera_tensor))
 
         self.feet_indices = torch.zeros(
             len(feet_names), dtype=torch.long, device=self.device, requires_grad=False

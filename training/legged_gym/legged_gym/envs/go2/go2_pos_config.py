@@ -511,6 +511,121 @@ class Go2PosDynamicComplexCfg(Go2PosDynamicBaseCfg):
             replay_ttc_threshold = 1.0
 
 
+
+class Go2PosDepthStairsCfg(Go2PosDynamicBaseCfg):
+    class env(Go2PosDynamicBaseCfg.env):
+        num_envs = 256
+        episode_length_s = 35
+        goal_reached_time = 12
+        stay_time = 250
+        num_props = 12
+        num_rays = 21
+        num_goal_obs = 2
+        dynamic_token_k = 0
+        dynamic_token_dim = 7
+        num_dynamic_obs = 0
+        num_obs_one_step = num_props + num_rays + num_goal_obs
+        num_observations = num_obs_one_step * Go2PosRoughCfg.env.his_len
+
+    class terrain(Go2PosDynamicBaseCfg.terrain):
+        terrain_types = ["depth_stairs_room"]
+        terrain_proportions = [1.0]
+        num_rows = 4
+        num_cols = 4
+        curriculum = False
+        max_init_terrain_level = 0
+        boundary_wall_thickness = 0.30
+        structural_wall_height = 1.0
+        stair_start_x = 4.80
+        stair_center_y = 5.00
+        stair_width = 1.60
+        stair_rise = 0.08
+        stair_tread = 0.30
+        stair_count = 4
+        platform_center_x = 7.20
+        platform_length = 2.40
+        platform_width = 2.20
+        structural_boxes = (
+            (3.75, 4.40, 1.70, 0.30, 1.00),
+            (3.75, 5.60, 1.70, 0.30, 1.00),
+            (5.40, 3.75, 1.80, 0.30, 1.00),
+            (5.40, 6.25, 1.80, 0.30, 1.00),
+            (7.20, 3.75, 2.40, 0.30, 1.00),
+            (7.20, 6.25, 2.40, 0.30, 1.00),
+        )
+        low_obstacle_boxes = (
+            (1.65, 4.55, 0.45, 0.30, 0.08),
+            (2.25, 5.35, 0.40, 0.35, 0.12),
+            (2.85, 4.65, 0.50, 0.30, 0.10),
+        )
+
+    class sensors(Go2PosRoughCfg.sensors):
+        class ray2d(Go2PosRoughCfg.sensors.ray2d):
+            enable = True
+            min_dist = 0.10
+            max_dist = 5.00
+            theta_start = -np.deg2rad(50.0)
+            theta_end = np.deg2rad(50.0) + 1e-4
+            theta_step = np.deg2rad(5.0)
+
+        class depth_cam:
+            enable = True
+            resolution = [160, 90]
+            x = 0.25
+            y = 0.0
+            z = 0.15
+            pitch_deg = -12.0
+            far_plane = 6.0
+            hfov = 102.0
+            min_ = 0.10
+            max_ = 5.00
+
+    class perception:
+        mode = "depth_predicted"
+        model_path = ""
+        update_hz = 10.0
+        ray_fov_deg = 100.0
+        obstacle_height_threshold = 0.03
+
+    class depth_stairs:
+        start_x_range = [0.75, 1.10]
+        start_y_range = [4.65, 5.35]
+        goal_x_range = [7.55, 7.95]
+        goal_y_range = [4.65, 5.35]
+        platform_start_x = 6.00
+        platform_height = 0.32
+        collision_inflation = 0.18
+        collision_cooldown_steps = 10
+
+    class replay(Go2PosDynamicBaseCfg.replay):
+        enable_collision_replay = False
+        enable_near_miss_replay = False
+        replay_prob = 0.0
+
+    class dynamic_obstacles(Go2PosDynamicBaseCfg.dynamic_obstacles):
+        enable = False
+        count = 0
+        count_range = [0, 0]
+
+    class domain_rand(Go2PosRoughCfg.domain_rand):
+        randomize_xy = False
+        randomize_yaw = False
+        randomize_roll = False
+        randomize_pitch = False
+        push_robots = False
+
+    class rewards(Go2PosDynamicBaseCfg.rewards):
+        class scales(Go2PosDynamicBaseCfg.rewards.scales):
+            reach_pos_target_tight = 15.0
+            goal_progress = 6.0
+            collision = -6.0
+            close_obst_vel = 4.0
+            dynamic_collision = 0.0
+            ttc_risk = 0.0
+            near_miss = 0.0
+
+
+
 class Go2PosRoughCfgPPO(LeggedRobotCfgPPO):
     runner_class_name = 'OnPolicyRunner'
     class algorithm(LeggedRobotCfgPPO.algorithm):
@@ -557,3 +672,9 @@ class Go2PosDynamicComplexCfgPPO(Go2PosRoughCfgPPO):
     class runner(Go2PosRoughCfgPPO.runner):
         run_name = ''
         experiment_name = 'Go2_pos_dynamic_complex'
+
+
+class Go2PosDepthStairsCfgPPO(Go2PosRoughCfgPPO):
+    class runner(Go2PosRoughCfgPPO.runner):
+        run_name = ""
+        experiment_name = "Go2_pos_depth_stairs"

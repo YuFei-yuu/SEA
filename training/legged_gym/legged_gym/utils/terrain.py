@@ -372,4 +372,58 @@ class Terrain:
             y0 = max(wall_thickness, cy - half_y)
             y1 = min(terrain.width - wall_thickness, cy + half_y)
             terrain.height_field_raw[x0:x1, y0:y1] = obstacle_height
-    
+
+    def depth_stairs_room_terrain_func(self, terrain, difficulty):
+        """Composite route with low obstacles, a narrow corridor, stairs, and platform."""
+        terrain.height_field_raw[:] = 0
+        wall_height = float(getattr(self.cfg, "structural_wall_height", 1.0))
+        wall_thickness = float(getattr(self.cfg, "boundary_wall_thickness", 0.30))
+
+        def fill_box(center_x, center_y, size_x, size_y, height):
+            half_x = max(1, int(round(0.5 * size_x / terrain.horizontal_scale)))
+            half_y = max(1, int(round(0.5 * size_y / terrain.horizontal_scale)))
+            center_x = int(round(center_x / terrain.horizontal_scale))
+            center_y = int(round(center_y / terrain.horizontal_scale))
+            x0 = max(0, center_x - half_x)
+            x1 = min(terrain.length, center_x + half_x)
+            y0 = max(0, center_y - half_y)
+            y1 = min(terrain.width, center_y + half_y)
+            height_i = int(round(height / terrain.vertical_scale))
+            terrain.height_field_raw[x0:x1, y0:y1] = np.maximum(
+                terrain.height_field_raw[x0:x1, y0:y1], height_i
+            )
+
+        boundary_cells = max(1, int(round(wall_thickness / terrain.horizontal_scale)))
+        boundary_height = int(round(wall_height / terrain.vertical_scale))
+        terrain.height_field_raw[:boundary_cells, :] = boundary_height
+        terrain.height_field_raw[-boundary_cells:, :] = boundary_height
+        terrain.height_field_raw[:, :boundary_cells] = boundary_height
+        terrain.height_field_raw[:, -boundary_cells:] = boundary_height
+
+        for box in getattr(self.cfg, "structural_boxes", ()):
+            fill_box(*box)
+        for box in getattr(self.cfg, "low_obstacle_boxes", ()):
+            fill_box(*box)
+
+        stair_start_x = float(self.cfg.stair_start_x)
+        stair_center_y = float(self.cfg.stair_center_y)
+        stair_width = float(self.cfg.stair_width)
+        stair_rise = float(self.cfg.stair_rise)
+        stair_tread = float(self.cfg.stair_tread)
+        stair_count = int(self.cfg.stair_count)
+        for step_idx in range(stair_count):
+            fill_box(
+                stair_start_x + (step_idx + 0.5) * stair_tread,
+                stair_center_y,
+                stair_tread,
+                stair_width,
+                (step_idx + 1) * stair_rise,
+            )
+        fill_box(
+            float(self.cfg.platform_center_x),
+            stair_center_y,
+            float(self.cfg.platform_length),
+            float(self.cfg.platform_width),
+            stair_count * stair_rise,
+        )
+

@@ -132,6 +132,16 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             env_cfg.env.num_envs = args.num_envs
         if args.seed is not None:
             env_cfg.seed = args.seed
+        if (
+            getattr(args, "depth_mode", None) is not None
+            and hasattr(env_cfg, "perception")
+        ):
+            env_cfg.perception.mode = args.depth_mode
+        if (
+            getattr(args, "depth_model", None) is not None
+            and hasattr(env_cfg, "perception")
+        ):
+            env_cfg.perception.model_path = args.depth_model
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed
@@ -161,6 +171,8 @@ def get_args():
         {"name": "--experiment_name", "type": str,  "help": "Name of the experiment to run or load. Overrides config file if provided."},
         {"name": "--run_name", "type": str,  "help": "Name of the run. Overrides config file if provided."},
         {"name": "--load_run", "type": str,  "help": "Name of the run to load when resume=True. If -1: will load the last run. Overrides config file if provided."},
+        {"name": "--depth_mode", "type": str, "choices": ["oracle", "depth_predicted"], "help": "Perception source for go2_pos_depth_stairs."},
+        {"name": "--depth_model", "type": str, "help": "Checkpoint from train_depth_rays.py for depth_predicted mode."},
         {"name": "--checkpoint", "type": int,  "help": "Saved model checkpoint number. If -1: will load the last checkpoint. Overrides config file if provided."},
         
         {"name": "--no_wandb", "action": "store_true", "default": True, "help": "Disable logging to Weights and Biases (wandb)"},

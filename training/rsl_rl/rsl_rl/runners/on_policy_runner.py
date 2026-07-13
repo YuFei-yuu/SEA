@@ -71,6 +71,11 @@ class OnPolicyRunner:
                                         num_rays=num_rays,
                                         num_goal_obs=getattr(self.env.cfg.env, "num_goal_obs", 2),
                                         num_dynamic_obs=getattr(self.env.cfg.env, "num_dynamic_obs", 0),
+                                        ray_fov_deg=getattr(
+                                            getattr(self.env.cfg, "perception", None),
+                                            "ray_fov_deg",
+                                            180.0,
+                                        ),
                                         **self.policy_cfg).to(self.device)
 
         alg_class = eval(self.cfg["algorithm_class_name"]) # PPO

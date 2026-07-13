@@ -22,6 +22,7 @@ class DifferentiableSafeActorCritic(nn.Module):
                     dynamic_cbf_default_safe_radius=0.45,
                     dynamic_cbf_safety_margin=0.35,
                     dynamic_cbf_damping_factor=1.0,
+                    ray_fov_deg=180.0,
                  **kwargs):
         super().__init__()
 
@@ -95,7 +96,7 @@ class DifferentiableSafeActorCritic(nn.Module):
         )
 
         # 4. Closed-form CBF Layer
-        self.cbf_layer = ExactLSECBFLayer(num_rays=num_rays)
+        self.cbf_layer = ExactLSECBFLayer(num_rays=num_rays, fov_deg=ray_fov_deg)
         self.dynamic_cbf_layer = DynamicTokenCBFLayer(
             default_safe_radius=dynamic_cbf_default_safe_radius,
             safety_margin=dynamic_cbf_safety_margin,
