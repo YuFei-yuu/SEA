@@ -374,7 +374,7 @@ class Terrain:
             terrain.height_field_raw[x0:x1, y0:y1] = obstacle_height
 
     def depth_stairs_room_terrain_func(self, terrain, difficulty):
-        """Composite route with low obstacles, a narrow corridor, stairs, and platform."""
+        """Low obstacles followed by five full-width, gap-free stairs and a platform."""
         terrain.height_field_raw[:] = 0
         wall_height = float(getattr(self.cfg, "structural_wall_height", 1.0))
         wall_thickness = float(getattr(self.cfg, "boundary_wall_thickness", 0.30))
@@ -393,12 +393,13 @@ class Terrain:
                 terrain.height_field_raw[x0:x1, y0:y1], height_i
             )
 
-        boundary_cells = max(1, int(round(wall_thickness / terrain.horizontal_scale)))
-        boundary_height = int(round(wall_height / terrain.vertical_scale))
-        terrain.height_field_raw[:boundary_cells, :] = boundary_height
-        terrain.height_field_raw[-boundary_cells:, :] = boundary_height
-        terrain.height_field_raw[:, :boundary_cells] = boundary_height
-        terrain.height_field_raw[:, -boundary_cells:] = boundary_height
+        if wall_thickness > 0.0:
+            boundary_cells = max(1, int(round(wall_thickness / terrain.horizontal_scale)))
+            boundary_height = int(round(wall_height / terrain.vertical_scale))
+            terrain.height_field_raw[:boundary_cells, :] = boundary_height
+            terrain.height_field_raw[-boundary_cells:, :] = boundary_height
+            terrain.height_field_raw[:, :boundary_cells] = boundary_height
+            terrain.height_field_raw[:, -boundary_cells:] = boundary_height
 
         for box in getattr(self.cfg, "structural_boxes", ()):
             fill_box(*box)
@@ -406,24 +407,24 @@ class Terrain:
             fill_box(*box)
 
         stair_start_x = float(self.cfg.stair_start_x)
-        stair_center_y = float(self.cfg.stair_center_y)
-        stair_width = float(self.cfg.stair_width)
         stair_rise = float(self.cfg.stair_rise)
         stair_tread = float(self.cfg.stair_tread)
         stair_count = int(self.cfg.stair_count)
+        stair_start_cell = int(round(stair_start_x / terrain.horizontal_scale))
+        stair_tread_cells = int(round(stair_tread / terrain.horizontal_scale))
+        stair_end_cell = stair_start_cell + stair_count * stair_tread_cells
+        interior_y0 = boundary_cells if wall_thickness > 0.0 else 0
+        interior_y1 = -boundary_cells if wall_thickness > 0.0 else terrain.width
         for step_idx in range(stair_count):
-            fill_box(
-                stair_start_x + (step_idx + 0.5) * stair_tread,
-                stair_center_y,
-                stair_tread,
-                stair_width,
-                (step_idx + 1) * stair_rise,
+            x0 = stair_start_cell + step_idx * stair_tread_cells
+            x1 = x0 + stair_tread_cells
+            terrain.height_field_raw[x0:x1, interior_y0:interior_y1] = int(
+                round((step_idx + 1) * stair_rise / terrain.vertical_scale)
             )
-        fill_box(
-            float(self.cfg.platform_center_x),
-            stair_center_y,
-            float(self.cfg.platform_length),
-            float(self.cfg.platform_width),
-            stair_count * stair_rise,
-        )
 
+        platform_end_cell = -boundary_cells if wall_thickness > 0.0 else terrain.length
+        terrain.height_field_raw[
+            stair_end_cell:platform_end_cell, interior_y0:interior_y1
+        ] = int(
+            round(stair_count * stair_rise / terrain.vertical_scale)
+        )

@@ -33,10 +33,11 @@ def main():
     eval_args, args = _parse_args()
     if args.task != "go2_pos_depth_stairs":
         raise ValueError("Use --task go2_pos_depth_stairs for this evaluator.")
-    if args.depth_mode not in (None, "depth_predicted"):
-        raise ValueError("Formal depth evaluation requires --depth_mode depth_predicted.")
-    if not args.depth_model:
-        raise ValueError("Formal depth evaluation requires --depth_model <best.pt>.")
+    perception_mode = args.depth_mode or "depth_predicted"
+    if perception_mode not in ("oracle", "depth_predicted"):
+        raise ValueError("Use --depth_mode oracle or --depth_mode depth_predicted.")
+    if perception_mode == "depth_predicted" and not args.depth_model:
+        raise ValueError("depth_predicted evaluation requires --depth_model <best.pt>.")
 
     args.headless = True
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
@@ -100,6 +101,7 @@ def main():
 
     summary = {
         "task": args.task,
+        "perception_mode": perception_mode,
         "depth_model": args.depth_model,
         "checkpoint_path": getattr(task_registry, "loaded_policy_path", ""),
         "num_episodes": len(rows),

@@ -97,9 +97,10 @@ class LeggedRobotPosDepthStairs(LeggedRobotPosDynamic):
         self.depth_ray_mae = torch.zeros(self.num_envs, device=self.device)
         self.depth_ray_error_sum = torch.zeros(self.num_envs, device=self.device)
         self.depth_ray_error_count = torch.zeros(self.num_envs, device=self.device)
-        self.camera_update_steps = max(
-            1, int(round(1.0 / (float(perception_cfg.update_hz) * self.dt)))
-        )
+        camera_update_hz = float(perception_cfg.update_hz)
+        if self.perception_mode == "oracle":
+            camera_update_hz = float(perception_cfg.oracle_camera_update_hz)
+        self.camera_update_steps = max(1, int(round(1.0 / (camera_update_hz * self.dt))))
         self.depth_ray_model = None
         if self.perception_mode == "depth_predicted":
             model_path = str(perception_cfg.model_path).format(

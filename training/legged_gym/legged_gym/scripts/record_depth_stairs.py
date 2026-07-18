@@ -20,6 +20,8 @@ def _parse_args():
     parser.add_argument("--output_trajectory", required=True)
     parser.add_argument("--num_episodes", type=int, default=3)
     parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--camera_mode", choices=("follow", "overview"), default="follow")
+    parser.add_argument("--max_steps", type=int, default=None)
     known, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0]] + remaining
     return known, get_args()
@@ -37,11 +39,16 @@ def main():
     record_args, args = _parse_args()
     if args.task != "go2_pos_depth_stairs":
         raise ValueError("Use --task go2_pos_depth_stairs for this recorder.")
-    if args.depth_mode not in (None, "depth_predicted") or not args.depth_model:
-        raise ValueError("Recording requires --depth_mode depth_predicted --depth_model <best.pt>.")
+    perception_mode = args.depth_mode or "depth_predicted"
+    if perception_mode not in ("oracle", "depth_predicted"):
+        raise ValueError("Use --depth_mode oracle or --depth_mode depth_predicted.")
+    if perception_mode == "depth_predicted" and not args.depth_model:
+        raise ValueError("depth_predicted recording requires --depth_model <best.pt>.")
 
     env_cfg, train_cfg = task_registry.get_cfgs(name=args.task)
     env_cfg.env.num_envs = 1
+    env_cfg.terrain.num_rows = 1
+    env_cfg.terrain.num_cols = 1
     env_cfg.noise.add_noise = False
     env_cfg.domain_rand.randomize_friction = False
     env_cfg.domain_rand.randomize_base_mass = False
@@ -54,6 +61,7 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(record_args.output_video)), exist_ok=True)
     os.makedirs(os.path.dirname(os.path.abspath(record_args.output_trajectory)), exist_ok=True)
     env, _ = task_registry.make_env(name=args.task, args=args, env_cfg=env_cfg)
+    env.camera_update_steps = 1
     runner, _ = task_registry.make_alg_runner(
         env=env, name=args.task, args=args, train_cfg=train_cfg
     )
@@ -72,14 +80,29 @@ def main():
     )
 
     obs, _ = env.reset()
+    room_origin = env.room_origins[0].detach().cpu().numpy()
     trajectory = []
     episodes = 0
-    max_steps = int(env.max_episode_length) * 100
+    max_steps = record_args.max_steps or int(env.max_episode_length) * 100
     with torch.no_grad():
         for _ in range(max_steps):
             root = env.root_states[0, :3].detach().cpu().numpy()
-            eye = gymapi.Vec3(float(root[0] - 3.5), float(root[1] - 3.5), float(root[2] + 2.4))
-            target = gymapi.Vec3(float(root[0]), float(root[1]), float(root[2] + 0.30))
+            if record_args.camera_mode == "overview":
+                eye = gymapi.Vec3(
+                    float(room_origin[0] + 1.2),
+                    float(room_origin[1] + 5.0),
+                    3.2,
+                )
+                target = gymapi.Vec3(
+                    float(room_origin[0] + 6.0),
+                    float(room_origin[1] + 5.0),
+                    0.12,
+                )
+            else:
+                eye = gymapi.Vec3(
+                    float(root[0] - 3.5), float(root[1] - 3.5), float(root[2] + 2.4)
+                )
+                target = gymapi.Vec3(float(root[0]), float(root[1]), float(root[2] + 0.30))
             env.gym.set_camera_location(external_camera, env.envs[0], eye, target)
 
             action = policy(obs.detach())

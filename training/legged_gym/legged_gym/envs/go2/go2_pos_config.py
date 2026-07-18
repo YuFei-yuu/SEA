@@ -538,21 +538,14 @@ class Go2PosDepthStairsCfg(Go2PosDynamicBaseCfg):
         structural_wall_height = 1.0
         stair_start_x = 4.80
         stair_center_y = 5.00
-        stair_width = 1.60
+        stair_width = 10.00
         stair_rise = 0.08
         stair_tread = 0.30
-        stair_count = 4
-        platform_center_x = 7.20
-        platform_length = 2.40
-        platform_width = 2.20
-        structural_boxes = (
-            (3.75, 4.40, 1.70, 0.30, 1.00),
-            (3.75, 5.60, 1.70, 0.30, 1.00),
-            (5.40, 3.75, 1.80, 0.30, 1.00),
-            (5.40, 6.25, 1.80, 0.30, 1.00),
-            (7.20, 3.75, 2.40, 0.30, 1.00),
-            (7.20, 6.25, 2.40, 0.30, 1.00),
-        )
+        stair_count = 5
+        platform_center_x = 8.15
+        platform_length = 3.70
+        platform_width = 10.00
+        structural_boxes = ()
         low_obstacle_boxes = (
             (1.65, 4.55, 0.45, 0.30, 0.08),
             (2.25, 5.35, 0.40, 0.35, 0.12),
@@ -584,6 +577,7 @@ class Go2PosDepthStairsCfg(Go2PosDynamicBaseCfg):
         mode = "depth_predicted"
         model_path = ""
         update_hz = 10.0
+        oracle_camera_update_hz = 2.0
         ray_fov_deg = 100.0
         obstacle_height_threshold = 0.03
 
@@ -592,8 +586,8 @@ class Go2PosDepthStairsCfg(Go2PosDynamicBaseCfg):
         start_y_range = [4.65, 5.35]
         goal_x_range = [7.55, 7.95]
         goal_y_range = [4.65, 5.35]
-        platform_start_x = 6.00
-        platform_height = 0.32
+        platform_start_x = 6.30
+        platform_height = 0.40
         collision_inflation = 0.18
         collision_cooldown_steps = 10
 
