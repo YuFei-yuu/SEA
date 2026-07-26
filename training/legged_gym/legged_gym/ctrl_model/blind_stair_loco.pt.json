@@ -1,0 +1,114 @@
+{
+  "schema_version": 1,
+  "input_dim": 45,
+  "output_dim": 12,
+  "observation_terms": [
+    "base_ang_vel",
+    "projected_gravity",
+    "velocity_command",
+    "joint_pos_error",
+    "joint_vel",
+    "last_action"
+  ],
+  "observation_layout": [
+    {
+      "name": "base_ang_vel",
+      "start": 0,
+      "end": 3
+    },
+    {
+      "name": "projected_gravity",
+      "start": 3,
+      "end": 6
+    },
+    {
+      "name": "velocity_command",
+      "start": 6,
+      "end": 9
+    },
+    {
+      "name": "joint_pos_error",
+      "start": 9,
+      "end": 21
+    },
+    {
+      "name": "joint_vel",
+      "start": 21,
+      "end": 33
+    },
+    {
+      "name": "last_action",
+      "start": 33,
+      "end": 45
+    }
+  ],
+  "joint_order": [
+    "FR_hip_joint",
+    "FR_thigh_joint",
+    "FR_calf_joint",
+    "FL_hip_joint",
+    "FL_thigh_joint",
+    "FL_calf_joint",
+    "RR_hip_joint",
+    "RR_thigh_joint",
+    "RR_calf_joint",
+    "RL_hip_joint",
+    "RL_thigh_joint",
+    "RL_calf_joint"
+  ],
+  "observation_scales": {
+    "lin_vel": 2.0,
+    "ang_vel": 0.25,
+    "dof_pos": 1.0,
+    "dof_vel": 0.05
+  },
+  "default_joint_angles": [
+    -0.1,
+    0.8,
+    -1.5,
+    0.1,
+    0.8,
+    -1.5,
+    -0.1,
+    1.0,
+    -1.5,
+    0.1,
+    1.0,
+    -1.5
+  ],
+  "control": {
+    "frequency_hz": 50.0,
+    "action_scale": 0.25,
+    "stiffness": [
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0,
+      30.0
+    ],
+    "damping": [
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75,
+      0.75
+    ]
+  },
+  "model_sha256": "5d97cfcfab19ebb78b5ed5b6b6809081dbcdc7cd0a04febfd3013876eeef5d58",
+  "checkpoint_path": "/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/07_27_05-04-43_staged_gate/model_2800.pt",
+  "checkpoint_sha256": "98abb6cf55147f7e937d775d1b87a10f96c575e7d1e256c9be971d43320b83f6"
+}

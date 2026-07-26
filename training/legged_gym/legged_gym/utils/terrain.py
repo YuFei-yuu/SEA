@@ -242,6 +242,59 @@ class Terrain:
     def flat_terrain_func(self, terrain, difficulty):
         terrain.height_field_raw[:] = 0.
 
+    def _blind_stair_height(self, difficulty):
+        heights = getattr(
+            self.cfg,
+            "blind_stair_heights",
+            (0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.10, 0.10),
+        )
+        level = min(int(round(difficulty * self.cfg.num_rows)), len(heights) - 1)
+        return float(heights[level])
+
+    def _five_step_pyramid_stairs(self, terrain, step_height):
+        terrain.height_field_raw[:] = 0
+        count = int(getattr(self.cfg, "blind_stair_count", 5))
+        tread_cells = max(
+            1,
+            int(
+                round(
+                    float(getattr(self.cfg, "blind_stair_tread", 0.30))
+                    / terrain.horizontal_scale
+                )
+            ),
+        )
+        platform_half = max(
+            1,
+            int(
+                round(
+                    0.5
+                    * float(getattr(self.cfg, "blind_stair_platform_size", 3.0))
+                    / terrain.horizontal_scale
+                )
+            ),
+        )
+        step_height_cells = int(round(step_height / terrain.vertical_scale))
+        center_x = terrain.length // 2
+        center_y = terrain.width // 2
+        for level in range(1, count + 1):
+            half_width = platform_half + (count - level + 1) * tread_cells
+            terrain.height_field_raw[
+                center_x - half_width : center_x + half_width,
+                center_y - half_width : center_y + half_width,
+            ] = level * step_height_cells
+
+    def blind_stair_up_terrain_func(self, terrain, difficulty):
+        """Pyramid with a low center so commands away from spawn climb stairs."""
+        self._five_step_pyramid_stairs(
+            terrain, step_height=-self._blind_stair_height(difficulty)
+        )
+
+    def blind_stair_down_terrain_func(self, terrain, difficulty):
+        """Pyramid with a high center so commands away from spawn descend stairs."""
+        self._five_step_pyramid_stairs(
+            terrain, step_height=self._blind_stair_height(difficulty)
+        )
+
     def rough_terrain_func(self, terrain, difficulty):
         max_height = 0.035 * difficulty / 0.9
         terrain.height_field_raw = np.random.uniform(-max_height*2-0.02, -0.02, terrain.height_field_raw.shape) / terrain.vertical_scale

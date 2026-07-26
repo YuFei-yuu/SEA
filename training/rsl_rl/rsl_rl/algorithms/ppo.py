@@ -53,6 +53,8 @@ class PPO:
                  use_clipped_value_loss=True,
                  schedule="fixed",
                  desired_kl=0.01,
+                 enable_action_range_regularization=True,
+                 enable_smoothness_regularization=True,
                  device='cpu',
                  ):
 
@@ -83,6 +85,8 @@ class PPO:
         self.lam = lam
         self.max_grad_norm = max_grad_norm
         self.use_clipped_value_loss = use_clipped_value_loss
+        self.enable_action_range_regularization = enable_action_range_regularization
+        self.enable_smoothness_regularization = enable_smoothness_regularization
 
     def init_storage(self, num_envs, num_transitions_per_env, obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, obs_shape, action_shape, self.device)
@@ -227,11 +231,26 @@ class PPO:
                         + 1.0 * value_loss \
                         - self.entropy_coef * (entropy_batch * valid_mask).sum() / (valid_mask.sum() + 1e-8)
                 
-                clip_mins = torch.tensor([-0.5, -0.8, -1.0], device=mu_batch.device)
-                clip_maxs = torch.tensor([1.7,  0.8,  1.0], device=mu_batch.device)
-                range_loss = (torch.sum((mu_batch - torch.clip(mu_batch, min=clip_mins, max=clip_maxs))**2, dim=-1) * valid_mask).sum() / (valid_mask.sum() + 1e-8)
-                
-                smooth_loss = self.compute_smoothness_loss(obs_batch, next_obs_batch)
+                range_loss = torch.zeros((), device=mu_batch.device)
+                if self.enable_action_range_regularization:
+                    if mu_batch.shape[-1] != 3:
+                        raise ValueError(
+                            "Navigation action range regularization requires 3 actions; "
+                            f"got {mu_batch.shape[-1]}."
+                        )
+                    clip_mins = torch.tensor([-0.5, -0.8, -1.0], device=mu_batch.device)
+                    clip_maxs = torch.tensor([1.7, 0.8, 1.0], device=mu_batch.device)
+                    range_loss = (
+                        torch.sum(
+                            (mu_batch - torch.clip(mu_batch, min=clip_mins, max=clip_maxs)) ** 2,
+                            dim=-1,
+                        )
+                        * valid_mask
+                    ).sum() / (valid_mask.sum() + 1e-8)
+
+                smooth_loss = torch.zeros((), device=mu_batch.device)
+                if self.enable_smoothness_regularization:
+                    smooth_loss = self.compute_smoothness_loss(obs_batch, next_obs_batch)
                 regularization_loss = range_loss + 0.05 * smooth_loss
                 loss += 1.0 * regularization_loss
 

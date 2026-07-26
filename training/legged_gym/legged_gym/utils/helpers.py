@@ -132,6 +132,14 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             env_cfg.env.num_envs = args.num_envs
         if args.seed is not None:
             env_cfg.seed = args.seed
+        if getattr(args, "min_terrain_level", None) is not None:
+            env_cfg.terrain.min_init_terrain_level = args.min_terrain_level
+        if getattr(args, "max_terrain_level", None) is not None:
+            env_cfg.terrain.max_init_terrain_level = args.max_terrain_level
+        if getattr(args, "down_stair_focus", False):
+            env_cfg.terrain.terrain_proportions = [0.1, 0.1, 0.8]
+        if getattr(args, "low_speed_focus", False) and hasattr(env_cfg, "commands"):
+            env_cfg.commands.low_speed_focus = True
         if (
             getattr(args, "depth_mode", None) is not None
             and hasattr(env_cfg, "perception")
@@ -142,6 +150,12 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             and hasattr(env_cfg, "perception")
         ):
             env_cfg.perception.model_path = args.depth_model
+        if getattr(args, "loco_backend", None) is not None and hasattr(env_cfg, "loco"):
+            env_cfg.loco.backend = args.loco_backend
+        if getattr(args, "loco_model", None) is not None and hasattr(env_cfg, "loco"):
+            env_cfg.loco.model_path = args.loco_model
+        if getattr(args, "loco_metadata", None) is not None and hasattr(env_cfg, "loco"):
+            env_cfg.loco.metadata_path = args.loco_metadata
     if cfg_train is not None:
         if args.seed is not None:
             cfg_train.seed = args.seed
@@ -173,6 +187,13 @@ def get_args():
         {"name": "--load_run", "type": str,  "help": "Name of the run to load when resume=True. If -1: will load the last run. Overrides config file if provided."},
         {"name": "--depth_mode", "type": str, "choices": ["oracle", "depth_predicted"], "help": "Perception source for go2_pos_depth_stairs."},
         {"name": "--depth_model", "type": str, "help": "Checkpoint from train_depth_rays.py for depth_predicted mode."},
+        {"name": "--loco_backend", "type": str, "choices": ["slr", "blind_stair"], "help": "Low-level controller backend."},
+        {"name": "--loco_model", "type": str, "help": "TorchScript model for the blind_stair backend."},
+        {"name": "--loco_metadata", "type": str, "help": "Contract JSON for the blind_stair backend."},
+        {"name": "--min_terrain_level", "type": int, "help": "Minimum initial terrain curriculum level."},
+        {"name": "--max_terrain_level", "type": int, "help": "Maximum initial terrain curriculum level."},
+        {"name": "--down_stair_focus", "action": "store_true", "default": False, "help": "Use a 10/10/80 flat/up/down terrain mix."},
+        {"name": "--low_speed_focus", "action": "store_true", "default": False, "help": "Sample 0.25 m/s for 70 percent of stair commands."},
         {"name": "--checkpoint", "type": int,  "help": "Saved model checkpoint number. If -1: will load the last checkpoint. Overrides config file if provided."},
         
         {"name": "--no_wandb", "action": "store_true", "default": True, "help": "Disable logging to Weights and Biases (wandb)"},

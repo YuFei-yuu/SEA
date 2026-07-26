@@ -28,5 +28,5 @@
 #
 # Copyright (c) 2021 ETH Zurich, Nikita Rudin
 
-from .actor_critic import ActorCritic
+from .actor_critic import ActorCritic, BlindLocomotionActorCritic
 from .cbf_actor_critic import DifferentiableSafeActorCritic

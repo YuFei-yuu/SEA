@@ -23,6 +23,7 @@ class DifferentiableSafeActorCritic(nn.Module):
                     dynamic_cbf_safety_margin=0.35,
                     dynamic_cbf_damping_factor=1.0,
                     ray_fov_deg=180.0,
+                    enable_shield=True,
                  **kwargs):
         super().__init__()
 
@@ -37,7 +38,7 @@ class DifferentiableSafeActorCritic(nn.Module):
         self.num_obs_hist = self.num_obs_one_step * his_len
         self.num_actions = num_actions
         self.num_latent = 16
-        self.enable_shield = True
+        self.enable_shield = bool(enable_shield)
 
         mlp_input_dim_a = self.num_obs_one_step + self.num_latent
         mlp_input_dim_c = self.num_obs_one_step + self.num_latent
@@ -163,9 +164,13 @@ class DifferentiableSafeActorCritic(nn.Module):
         self.alpha = alpha 
         
         # 4. First shield static/ray obstacles, then apply velocity-aware dynamic CBF.
-        u_static_safe = self.cbf_layer(u_bar, rays_real, alpha)
-        base_vel = props[:, 6:8] if props.shape[-1] >= 8 else None
-        u_s = self.dynamic_cbf_layer(u_static_safe, dyn, base_vel, alpha)
+        if self.enable_shield:
+            u_static_safe = self.cbf_layer(u_bar, rays_real, alpha)
+            base_vel = props[:, 6:8] if props.shape[-1] >= 8 else None
+            u_s = self.dynamic_cbf_layer(u_static_safe, dyn, base_vel, alpha)
+        else:
+            u_static_safe = u_bar
+            u_s = u_bar
         
         # Save u_bar and u_s for calculating Intervention Loss
         self.u_bar = u_bar

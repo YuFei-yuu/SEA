@@ -194,6 +194,74 @@ class ActorCritic(nn.Module):
                             (obs_buf, latent), dim=-1)  # detach? 
         value = self.critic(observations)
         return value
+
+
+class BlindLocomotionActorCritic(nn.Module):
+    """Feed-forward actor-critic for proprioceptive velocity locomotion."""
+
+    is_recurrent = False
+
+    def __init__(
+        self,
+        num_actions,
+        num_actor_obs,
+        actor_hidden_dims=(512, 256, 128),
+        critic_hidden_dims=(512, 256, 128),
+        activation="elu",
+        init_noise_std=1.0,
+        **kwargs,
+    ):
+        super().__init__()
+        activation_cls = type(get_activation(activation))
+
+        def build_mlp(input_dim, hidden_dims, output_dim):
+            layers = []
+            last_dim = input_dim
+            for hidden_dim in hidden_dims:
+                layers.extend((nn.Linear(last_dim, hidden_dim), activation_cls()))
+                last_dim = hidden_dim
+            layers.append(nn.Linear(last_dim, output_dim))
+            return nn.Sequential(*layers)
+
+        self.num_actor_obs = int(num_actor_obs)
+        self.num_actions = int(num_actions)
+        self.actor = build_mlp(self.num_actor_obs, actor_hidden_dims, self.num_actions)
+        self.critic = build_mlp(self.num_actor_obs, critic_hidden_dims, 1)
+        self.std = nn.Parameter(init_noise_std * torch.ones(self.num_actions))
+        self.distribution = None
+        Normal.set_default_validate_args = False
+
+    @property
+    def action_mean(self):
+        return self.distribution.mean
+
+    @property
+    def action_std(self):
+        return self.distribution.stddev
+
+    @property
+    def entropy(self):
+        return self.distribution.entropy().sum(dim=-1)
+
+    def reset(self, dones=None):
+        pass
+
+    def update_distribution(self, observations):
+        mean = self.actor(observations)
+        self.distribution = Normal(mean, mean * 0.0 + self.std)
+
+    def act(self, observations, **kwargs):
+        self.update_distribution(observations)
+        return self.distribution.sample()
+
+    def get_actions_log_prob(self, actions):
+        return self.distribution.log_prob(actions).sum(dim=-1)
+
+    def act_inference(self, observations, **kwargs):
+        return self.actor(observations)
+
+    def evaluate(self, observations, **kwargs):
+        return self.critic(observations)
     
     
 def get_activation(act_name):

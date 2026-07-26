@@ -45,6 +45,11 @@ from legged_gym.utils.grid2ray import *
 from .legged_robot_pos_config import LeggedRobotPosCfg
 from legged_gym.envs.go2.go2_pos_config import Go2PosRoughCfg
 from legged_gym.utils.custom_terrain import *
+from legged_gym.low_level import (
+    BlindStairPolicy,
+    GO2_INTERNAL_TO_EXTERNAL_INDEX,
+    build_blind_stair_observation,
+)
 import torch.nn.functional as F
 
 SAVE_IMG = False
@@ -130,9 +135,46 @@ class LeggedRobotPos(LeggedRobot):
         self.collision_pos_hist = torch.zeros(self.num_envs, max_col_pts, 3, device=self.device, dtype=torch.float)
         self.num_collisions = torch.zeros(self.num_envs, device=self.device, dtype=torch.long)
         
-        self.slr_body = torch.jit.load(f"{LEGGED_GYM_ROOT_DIR}/legged_gym/ctrl_model/body_latest.jit", map_location=self.device)
-        self.slr_encoder_vel = torch.jit.load(f"{LEGGED_GYM_ROOT_DIR}/legged_gym/ctrl_model/encoder_vel.jit", map_location=self.device)
-        self.slr_encoder_latent = torch.jit.load(f"{LEGGED_GYM_ROOT_DIR}/legged_gym/ctrl_model/encoder_latent.jit", map_location=self.device)
+        self.locomotion_backend = str(getattr(self.cfg.loco, "backend", "slr"))
+        if self.locomotion_backend == "slr":
+            self.slr_body = torch.jit.load(f"{LEGGED_GYM_ROOT_DIR}/legged_gym/ctrl_model/body_latest.jit", map_location=self.device)
+            self.slr_encoder_vel = torch.jit.load(f"{LEGGED_GYM_ROOT_DIR}/legged_gym/ctrl_model/encoder_vel.jit", map_location=self.device)
+            self.slr_encoder_latent = torch.jit.load(f"{LEGGED_GYM_ROOT_DIR}/legged_gym/ctrl_model/encoder_latent.jit", map_location=self.device)
+            self.blind_stair_policy = None
+        elif self.locomotion_backend == "blind_stair":
+            model_path = str(self.cfg.loco.model_path).format(LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR)
+            metadata_path = str(getattr(self.cfg.loco, "metadata_path", "")).format(
+                LEGGED_GYM_ROOT_DIR=LEGGED_GYM_ROOT_DIR
+            )
+            external_default = self.reindex(self.default_dof_pos).squeeze(0).tolist()
+            external_stiffness = self.reindex(self.p_gains.unsqueeze(0)).squeeze(0).tolist()
+            external_damping = self.reindex(self.d_gains.unsqueeze(0)).squeeze(0).tolist()
+            external_joint_order = [
+                self.dof_names[index] for index in GO2_INTERNAL_TO_EXTERNAL_INDEX
+            ]
+            self.blind_stair_policy = BlindStairPolicy(
+                model_path=model_path,
+                metadata_path=metadata_path,
+                device=self.device,
+                expected={
+                    "observation_scales": {
+                        "lin_vel": self.cfg.loco.normalization.obs_scales.lin_vel,
+                        "ang_vel": self.cfg.loco.normalization.obs_scales.ang_vel,
+                        "dof_pos": self.cfg.loco.normalization.obs_scales.dof_pos,
+                        "dof_vel": self.cfg.loco.normalization.obs_scales.dof_vel,
+                    },
+                    "joint_order": external_joint_order,
+                    "default_joint_angles": external_default,
+                    "control": {
+                        "frequency_hz": 1.0 / self.dt,
+                        "action_scale": self.cfg.control.action_scale,
+                        "stiffness": external_stiffness,
+                        "damping": external_damping,
+                    },
+                },
+            )
+        else:
+            raise ValueError(f"Unsupported locomotion backend: {self.locomotion_backend}")
 
     def _update_replay_buffer(self):
         # Update replay buffer
@@ -187,13 +229,18 @@ class LeggedRobotPos(LeggedRobot):
         scale_dof_vel = self.cfg.loco.normalization.obs_scales.dof_vel
         
         self.slr_commands_scale = torch.tensor([scale_lin_vel, scale_lin_vel, scale_ang_vel], device=self.device, requires_grad=False,)
-        self.slr_obs_buf =torch.cat((
-                self.base_ang_vel * scale_ang_vel, # 3
-                self.projected_gravity, # 3
-                self.slr_commands[:, :3] * self.slr_commands_scale,
-                self.reindex((self.dof_pos - self.default_dof_pos) * scale_dof_pos),
-                self.reindex(self.dof_vel * scale_dof_vel),
-                self.actions_orig),dim=-1)
+        self.slr_obs_buf = build_blind_stair_observation(
+            self.base_ang_vel,
+            self.projected_gravity,
+            self.slr_commands[:, :3],
+            self.reindex(self.dof_pos - self.default_dof_pos),
+            self.reindex(self.dof_vel),
+            self.actions_orig,
+            lin_vel_scale=scale_lin_vel,
+            ang_vel_scale=scale_ang_vel,
+            dof_pos_scale=scale_dof_pos,
+            dof_vel_scale=scale_dof_vel,
+        )
         
         noise_scales = self.cfg.noise.noise_scales
         noise_vec = torch.cat((torch.ones(3) * noise_scales.ang_vel,
@@ -220,11 +267,14 @@ class LeggedRobotPos(LeggedRobot):
         )  
         prop = self.slr_obs_buf
         ang_vel = self.base_ang_vel[:, 2:] * scale_ang_vel
-        self.base_lin_vel_pred = self.slr_encoder_vel(self.slr_obs_hist.view(self.num_envs, -1))
-        latent = self.slr_encoder_latent(self.slr_obs_hist.view(self.num_envs, -1))
-        actor_obs = torch.cat(
-            (self.base_lin_vel_pred, prop, ang_vel, latent), dim=-1)
-        actions = self.slr_body(actor_obs)
+        if self.locomotion_backend == "blind_stair":
+            actions = self.blind_stair_policy(prop)
+        else:
+            self.base_lin_vel_pred = self.slr_encoder_vel(self.slr_obs_hist.view(self.num_envs, -1))
+            latent = self.slr_encoder_latent(self.slr_obs_hist.view(self.num_envs, -1))
+            actor_obs = torch.cat(
+                (self.base_lin_vel_pred, prop, ang_vel, latent), dim=-1)
+            actions = self.slr_body(actor_obs)
         
         return actions
 
@@ -400,6 +450,7 @@ class LeggedRobotPos(LeggedRobot):
         self.stay_timer[env_ids] = 0
         self.reach_goal[env_ids] = 0
         self.nav_actions_filtered[env_ids] = 0.
+        self.actions_orig[env_ids] = 0.
         
         self.contact_filt[env_ids] = False
         self.last_contacts[env_ids] = False

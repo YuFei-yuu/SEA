@@ -40,6 +40,9 @@ DYNAMIC_ROOM_COMPLEX_OBSTACLE_BOXES = (
 
 class Go2PosRoughCfg(LeggedRobotPosCfg):
     class loco:
+        backend = "slr"
+        model_path = ""
+        metadata_path = ""
         num_obs_buf = 45
         his_len = 10
         class normalization:

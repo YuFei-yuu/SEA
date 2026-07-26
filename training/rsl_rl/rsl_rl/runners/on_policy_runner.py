@@ -41,7 +41,7 @@ import torch
 from rsl_rl.env import VecEnv
 import wandb
 from rsl_rl.algorithms.ppo import PPO
-from rsl_rl.modules.actor_critic import ActorCritic
+from rsl_rl.modules.actor_critic import ActorCritic, BlindLocomotionActorCritic
 from rsl_rl.modules.cbf_actor_critic import DifferentiableSafeActorCritic
 class OnPolicyRunner:
 
@@ -60,12 +60,13 @@ class OnPolicyRunner:
         self.args = args
 
         num_obs = self.env.num_obs
-        num_rays = self.env.rays.shape[1]
-        num_nav_actions = self.env.num_nav_actions
+        num_rays = self.env.rays.shape[1] if hasattr(self.env, "rays") else 0
+        num_nav_actions = getattr(self.env, "num_nav_actions", self.env.num_actions)
         actor_critic_class = eval(self.cfg["policy_class_name"])
 
         actor_critic: ActorCritic = actor_critic_class( 
                                         num_actions=num_nav_actions,
+                                        num_actor_obs=num_obs,
                                         num_props=self.env.num_props,
                                         his_len=self.env.cfg.env.his_len,
                                         num_rays=num_rays,
