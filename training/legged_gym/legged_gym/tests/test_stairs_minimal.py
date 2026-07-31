@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from collections import deque
 from types import SimpleNamespace
 import unittest
 
@@ -16,13 +17,23 @@ from legged_gym.envs.go2.go2_blind_stair_loco_config import (
     Go2BlindStairForwardFinetuneCfg,
     Go2BlindStairForwardFinetuneCfgPPO,
 )
+from legged_gym.envs.go2.go2_pos_config import Go2PosDepthStairsCfg
+from legged_gym.envs.go2.go2_stairs_minimal_config import Go2PosStairsMinimalCfg
 from legged_gym.envs.base.legged_robot_pos_stairs_minimal import (
+    COLLISION_CLASS_NAMES,
+    deterministic_uniform_from_seed,
     exclusive_terminal_masks,
     stair_fully_cleared,
     stair_progress_is_stuck,
     stair_success_eligible,
     timeout_reached,
     update_consecutive_timer,
+)
+from legged_gym.utils.footprint_rays import ray_aabb_distances, room_footprint_boxes
+from legged_gym.utils.fixed_room_planner import (
+    build_bidirectional_route_templates,
+    build_occupancy_grid,
+    segment_is_free,
 )
 from legged_gym.low_level import (
     BlindStairPolicy,
@@ -47,6 +58,127 @@ EXPECTED = {
 
 
 class TestMinimalStairs(unittest.TestCase):
+    def test_seeded_eval_sampling_is_deterministic_and_bounded(self):
+        seeds = torch.tensor([1000, 1001, 2000])
+        first = deterministic_uniform_from_seed(seeds, 7, 0.75, 1.10)
+        second = deterministic_uniform_from_seed(seeds, 7, 0.75, 1.10)
+        self.assertTrue(torch.equal(first, second))
+        self.assertTrue(torch.all((first >= 0.75) & (first <= 1.10)))
+        self.assertEqual(torch.unique(first).numel(), len(seeds))
+
+    def test_footprint_ray_hits_aabb_and_rejects_parallel_miss(self):
+        origins = torch.tensor([[0.0, 0.0]])
+        directions = torch.tensor([[[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]])
+        centers = torch.tensor([[2.0, 0.0]])
+        half_extents = torch.tensor([[0.5, 0.5]])
+        distances = ray_aabb_distances(
+            origins, directions, centers, half_extents, min_dist=0.1, max_dist=5.0
+        )
+        self.assertTrue(torch.allclose(distances[0, :, 0], torch.tensor([1.5, 5.0, 5.0])))
+        self.assertTrue(torch.isfinite(distances).all())
+
+    def test_room_footprint_contains_walls_and_20_full_size_obstacles(self):
+        cfg = Go2PosStairsMinimalCfg().terrain
+        centers, half_extents = room_footprint_boxes(cfg.low_obstacle_boxes)
+        self.assertEqual(tuple(centers.shape), (24, 2))
+        self.assertEqual(tuple(half_extents.shape), (24, 2))
+        self.assertTrue(torch.all(half_extents >= 0.15))
+        self.assertEqual(len(cfg.low_obstacle_boxes), 20)
+        original_boxes = set(Go2PosDepthStairsCfg().terrain.low_obstacle_boxes)
+        self.assertTrue(all(box in original_boxes for box in cfg.low_obstacle_boxes))
+        self.assertEqual(len(set(cfg.low_obstacle_boxes)), 20)
+        self.assertTrue(torch.all(centers[4:, 0] < cfg.stair_start_x))
+
+        forward_clearance = ray_aabb_distances(
+            torch.tensor([[4.70, 5.0]]),
+            torch.tensor([[[1.0, 0.0]]]),
+            centers,
+            half_extents,
+            min_dist=0.1,
+            max_dist=5.0,
+        ).min(dim=-1).values.item()
+        self.assertGreater(forward_clearance, 4.5)
+
+        resolution = 0.05
+        cells = int(10.0 / resolution)
+        occupied = np.zeros((cells, cells), dtype=bool)
+        for center, extent in zip(centers.numpy(), half_extents.numpy()):
+            lower = np.floor((center - extent) / resolution).astype(int).clip(0, cells)
+            upper = np.ceil((center + extent) / resolution).astype(int).clip(0, cells)
+            occupied[lower[0] : upper[0], lower[1] : upper[1]] = True
+        start = (int(0.95 / resolution), int(5.0 / resolution))
+        target_x = int(4.60 / resolution)
+        queue = deque([start])
+        visited = {start}
+        reached = False
+        while queue:
+            x, y = queue.popleft()
+            if x >= target_x:
+                reached = True
+                break
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbor = (x + dx, y + dy)
+                if (
+                    0 <= neighbor[0] < cells
+                    and 0 <= neighbor[1] < cells
+                    and not occupied[neighbor]
+                    and neighbor not in visited
+                ):
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        self.assertTrue(reached)
+
+    def test_fixed_map_routes_are_clear_and_diagonal(self):
+        cfg = Go2PosStairsMinimalCfg()
+        templates, lengths, _, _ = build_bidirectional_route_templates(
+            cfg.terrain.low_obstacle_boxes,
+            start_y_range=cfg.depth_stairs.start_y_range,
+            route_bins=cfg.depth_stairs.route_bins,
+            low_start_x=cfg.depth_stairs.up_start_x_range[0],
+            high_start_x=cfg.depth_stairs.down_start_x_range[0],
+            up_goal=(cfg.depth_stairs.up_goal_x_range[0], cfg.depth_stairs.goal_y_range[0]),
+            down_goal=(cfg.depth_stairs.down_goal_x_range[0], cfg.depth_stairs.goal_y_range[0]),
+            low_staging=tuple(cfg.depth_stairs.route_low_staging),
+            high_staging=tuple(cfg.depth_stairs.route_high_staging),
+            obstacle_inflation=cfg.depth_stairs.route_obstacle_inflation,
+        )
+        occupied = build_occupancy_grid(
+            cfg.terrain.low_obstacle_boxes,
+            obstacle_inflation=cfg.depth_stairs.footprint_inflation,
+        )
+        self.assertEqual(templates.shape[:2], (2, cfg.depth_stairs.route_bins))
+        self.assertTrue(np.all(lengths >= 4))
+        for direction in range(2):
+            for route_index in range(cfg.depth_stairs.route_bins):
+                route = templates[direction, route_index, : lengths[direction, route_index]]
+                for start, goal in zip(route[:-1], route[1:]):
+                    # Only the low-floor route is rasterized with obstacles;
+                    # the high platform and stair span are intentionally open.
+                    if max(start[0], goal[0]) <= cfg.depth_stairs.route_low_staging[0] + 1e-5:
+                        rounded_start = tuple(round(float(value), 4) for value in start)
+                        rounded_goal = tuple(round(float(value), 4) for value in goal)
+                        self.assertTrue(
+                            segment_is_free(occupied, rounded_start, rounded_goal)
+                        )
+        stair_delta = np.asarray(cfg.depth_stairs.route_high_staging) - np.asarray(
+            cfg.depth_stairs.route_low_staging
+        )
+        stair_angle = abs(np.degrees(np.arctan2(stair_delta[1], stair_delta[0])))
+        self.assertGreater(stair_angle, 5.0)
+        self.assertLess(stair_angle, cfg.depth_stairs.heading_tolerance_deg)
+
+    def test_down_start_has_room_for_diagonal_platform_approach(self):
+        cfg = Go2PosStairsMinimalCfg().depth_stairs
+        self.assertEqual(cfg.up_goal_x_range, [7.20, 7.20])
+        self.assertEqual(cfg.down_start_x_range, [8.60, 8.60])
+        self.assertGreater(cfg.down_start_x_range[0] - cfg.route_high_staging[0], 1.0)
+
+    def test_collision_class_contract(self):
+        self.assertEqual(COLLISION_CLASS_NAMES[0], "none")
+        self.assertEqual(COLLISION_CLASS_NAMES[1], "low_obstacle")
+        self.assertEqual(COLLISION_CLASS_NAMES[2], "wall")
+        self.assertEqual(COLLISION_CLASS_NAMES[3], "stair")
+
     def test_forward_finetune_contract(self):
         env_cfg = Go2BlindStairForwardFinetuneCfg()
         train_cfg = Go2BlindStairForwardFinetuneCfgPPO()
