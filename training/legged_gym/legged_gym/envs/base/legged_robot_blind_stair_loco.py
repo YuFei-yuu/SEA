@@ -123,6 +123,12 @@ class LeggedRobotBlindStairLoco(LeggedRobot):
             self.commands[stair_ids, 0] = gate_speeds[speed_indices]
             self.commands[stair_ids, 1:3] = 0.0
 
+    def _post_physics_step_callback(self):
+        super()._post_physics_step_callback()
+        contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
+        self.contact_filt = torch.logical_or(contact, self.last_contacts)
+        self.last_contacts = contact
+
     def compute_observations(self):
         self.obs_buf = build_blind_stair_observation(
             self.base_ang_vel,
@@ -182,10 +188,21 @@ class LeggedRobotBlindStairLoco(LeggedRobot):
         relative_height = self.feet_pos[:, :, 2] - self.root_states[:, None, 2]
         relative_xy_velocity = self.feet_vel[:, :, :2] - self.root_states[:, None, 7:9]
         moving_weight = torch.tanh(2.0 * torch.norm(relative_xy_velocity, dim=2))
+        swing_weight = (~self.contact_filt).float()
         penalty = torch.sum(
-            torch.square(relative_height - target_height) * moving_weight, dim=1
+            torch.square(relative_height - target_height) * moving_weight * swing_weight,
+            dim=1,
         )
         return penalty * (torch.norm(self.commands[:, :2], dim=1) > 0.1)
+
+    def _reward_feet_slip(self):
+        tangential_speed_sq = torch.sum(torch.square(self.feet_vel[:, :, :2]), dim=2)
+        return torch.sum(tangential_speed_sq * self.contact_filt.float(), dim=1)
+
+    def _reward_torque_peaks(self):
+        threshold = float(self.cfg.rewards.soft_torque_peak) * self.torque_limits
+        excess = torch.clamp(torch.abs(self.torques) - threshold, min=0.0)
+        return torch.sum(torch.square(excess), dim=1)
 
     def _reward_undesired_contacts(self):
         contacts = torch.norm(

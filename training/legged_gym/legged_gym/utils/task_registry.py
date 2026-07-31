@@ -155,6 +155,9 @@ class TaskRegistry():
 
         runner = runner_class(env, train_cfg_dict, log_dir, args=args, device=args.rl_device)
         resume = train_cfg.runner.resume
+        init_checkpoint = getattr(args, "init_checkpoint", None)
+        if resume and init_checkpoint:
+            raise ValueError("--resume and --init_checkpoint are mutually exclusive")
         if resume:
             resume_experiment = train_cfg.runner.resume_experiment_name
             if resume_experiment is not None:
@@ -164,6 +167,22 @@ class TaskRegistry():
             self.loaded_policy_path = resume_path
             print(f"Loading model from: {resume_path}")
             runner.load(resume_path)
+        elif init_checkpoint:
+            init_checkpoint = os.path.abspath(init_checkpoint)
+            if not os.path.isfile(init_checkpoint):
+                raise FileNotFoundError(
+                    f"Weight-only initialization checkpoint is missing: {init_checkpoint}"
+                )
+            self.loaded_policy_path = init_checkpoint
+            print(
+                "Loading network weights only (fresh optimizer, iteration 0) from: "
+                f"{init_checkpoint}"
+            )
+            runner.load(
+                init_checkpoint,
+                load_optimizer=False,
+                reset_iteration=True,
+            )
         return runner, train_cfg
 
 # make global task registry

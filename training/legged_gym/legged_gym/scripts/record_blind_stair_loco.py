@@ -79,6 +79,7 @@ def configure_environment(env_cfg, direction):
 
 def put_label(
     frame,
+    checkpoint_iteration,
     direction,
     speed,
     trial,
@@ -90,7 +91,7 @@ def put_label(
     all_feet_clear,
 ):
     lines = (
-        f"model 2800 | fixed sim | {direction} | trial {trial}/{trial_count}",
+        f"model iteration {checkpoint_iteration} | fixed sim | {direction} | trial {trial}/{trial_count}",
         f"forward command vx: {speed:+.2f} m/s",
         f"step: {step:04d} | local x: {local_x:+.2f} m | base z: {z:.2f} m",
         f"heading alignment: {heading_alignment:+.2f} | all feet clear: {int(all_feet_clear)}",
@@ -132,6 +133,7 @@ def record_trial(
     fps,
     max_steps,
     frame_size,
+    checkpoint_iteration,
 ):
     env_id = torch.arange(1, device=env.device)
     obs = reset_trial(env, env_id)
@@ -227,6 +229,7 @@ def record_trial(
             frame = cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR)
             put_label(
                 frame,
+                checkpoint_iteration,
                 direction,
                 speed,
                 trial,
@@ -275,8 +278,12 @@ def record_trial(
 
 def main():
     record_args, args = parse_args()
-    if args.task != "go2_blind_stair_loco":
-        raise ValueError("Use --task go2_blind_stair_loco")
+    supported_tasks = {
+        "go2_blind_stair_loco",
+        "go2_blind_stair_loco_forward_finetune",
+    }
+    if args.task not in supported_tasks:
+        raise ValueError(f"Use one of: {sorted(supported_tasks)}")
     checkpoint_path = os.path.abspath(record_args.checkpoint)
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(checkpoint_path)
@@ -290,10 +297,6 @@ def main():
     # Keep every recording on the fixed 0.08 m row.
     env.cfg.terrain.curriculum = False
     policy, checkpoint_iteration = load_policy(checkpoint_path, env.device)
-    if checkpoint_iteration != 2800:
-        raise ValueError(
-            f"Expected checkpoint iteration 2800, got {checkpoint_iteration}"
-        )
 
     camera_props = gymapi.CameraProperties()
     camera_props.width = record_args.width
@@ -319,9 +322,17 @@ def main():
             record_args.fps,
             record_args.max_steps,
             (record_args.width, record_args.height),
+            checkpoint_iteration,
         )
         results.append(result)
         print(json.dumps(result, indent=2))
+
+    failed = [result for result in results if result["outcome"] != "fully_cleared"]
+    if failed:
+        failures = ", ".join(
+            f"{result['speed_mps']:.2f}m/s={result['outcome']}" for result in failed
+        )
+        raise RuntimeError(f"Review recording contains non-cleared trials: {failures}")
 
     summary = {
         "task": args.task,

@@ -12,6 +12,8 @@ from .base.legged_robot_pos_stairs_minimal import LeggedRobotPosStairsMinimal
 from .go2.go2_blind_stair_loco_config import (
     Go2BlindStairLocoCfg,
     Go2BlindStairLocoCfgPPO,
+    Go2BlindStairForwardFinetuneCfg,
+    Go2BlindStairForwardFinetuneCfgPPO,
 )
 from .go2.go2_stairs_minimal_config import (
     Go2PosStairsMinimalCfg,
@@ -43,6 +45,12 @@ task_registry.register(
     LeggedRobotBlindStairLoco,
     Go2BlindStairLocoCfg(),
     Go2BlindStairLocoCfgPPO(),
+)
+task_registry.register(
+    "go2_blind_stair_loco_forward_finetune",
+    LeggedRobotBlindStairLoco,
+    Go2BlindStairForwardFinetuneCfg(),
+    Go2BlindStairForwardFinetuneCfgPPO(),
 )
 task_registry.register(
     "go2_pos_stairs_minimal",

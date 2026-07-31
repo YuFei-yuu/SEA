@@ -3,6 +3,7 @@
 import json
 import os
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 import isaacgym
@@ -11,6 +12,10 @@ import numpy as np
 import torch
 
 from legged_gym.envs.go2.go2_blind_stair_loco_config import Go2BlindStairLocoCfg
+from legged_gym.envs.go2.go2_blind_stair_loco_config import (
+    Go2BlindStairForwardFinetuneCfg,
+    Go2BlindStairForwardFinetuneCfgPPO,
+)
 from legged_gym.envs.base.legged_robot_pos_stairs_minimal import (
     exclusive_terminal_masks,
     stair_fully_cleared,
@@ -25,9 +30,11 @@ from legged_gym.low_level import (
     build_blind_stair_metadata,
     build_blind_stair_observation,
 )
+from legged_gym.scripts.gate_blind_stair_loco import gate_required_successes
 from legged_gym.utils.terrain import Terrain
 from rsl_rl.algorithms import PPO
 from rsl_rl.modules import BlindLocomotionActorCritic, DifferentiableSafeActorCritic
+from rsl_rl.runners.on_policy_runner import OnPolicyRunner
 
 
 DEFAULT_ANGLES = (-0.1, 0.8, -1.5, 0.1, 0.8, -1.5, -0.1, 1.0, -1.5, 0.1, 1.0, -1.5)
@@ -40,6 +47,52 @@ EXPECTED = {
 
 
 class TestMinimalStairs(unittest.TestCase):
+    def test_forward_finetune_contract(self):
+        env_cfg = Go2BlindStairForwardFinetuneCfg()
+        train_cfg = Go2BlindStairForwardFinetuneCfgPPO()
+        self.assertEqual(env_cfg.env.num_observations, 45)
+        self.assertEqual(env_cfg.env.num_actions, 12)
+        self.assertEqual(env_cfg.terrain.terrain_proportions, [0.1, 0.2, 0.7])
+        self.assertEqual(train_cfg.algorithm.learning_rate, 1.0e-4)
+        self.assertEqual(train_cfg.algorithm.schedule, "fixed")
+        self.assertEqual(gate_required_successes(20), 19)
+
+    def test_weight_only_load_resets_iteration_and_keeps_fresh_optimizer(self):
+        source = torch.nn.Linear(3, 2)
+        source_optimizer = torch.optim.Adam(source.parameters(), lr=1.0e-3)
+        source(torch.ones(1, 3)).sum().backward()
+        source_optimizer.step()
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint_path = os.path.join(directory, "model_2800.pt")
+            torch.save(
+                {
+                    "model_state_dict": source.state_dict(),
+                    "optimizer_state_dict": source_optimizer.state_dict(),
+                    "iter": 2800,
+                    "infos": None,
+                },
+                checkpoint_path,
+            )
+            target = torch.nn.Linear(3, 2)
+            fresh_optimizer = torch.optim.Adam(target.parameters(), lr=1.0e-4)
+            runner = OnPolicyRunner.__new__(OnPolicyRunner)
+            runner.device = "cpu"
+            runner.alg = SimpleNamespace(
+                actor_critic=target,
+                optimizer=fresh_optimizer,
+            )
+            runner.current_learning_iteration = 99
+            runner.load(
+                checkpoint_path,
+                load_optimizer=False,
+                reset_iteration=True,
+            )
+            self.assertEqual(runner.current_learning_iteration, 0)
+            self.assertEqual(fresh_optimizer.param_groups[0]["lr"], 1.0e-4)
+            self.assertEqual(len(fresh_optimizer.state), 0)
+            for source_value, target_value in zip(source.parameters(), target.parameters()):
+                self.assertTrue(torch.equal(source_value, target_value))
+
     def test_blind_actor_shape(self):
         policy = BlindLocomotionActorCritic(num_actions=12, num_actor_obs=45)
         self.assertEqual(tuple(policy.act_inference(torch.zeros(4, 45)).shape), (4, 12))

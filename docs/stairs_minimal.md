@@ -3,11 +3,12 @@
 ## 任务与接口
 
 - `go2_blind_stair_loco`：SEA Go2 原生盲式低层任务，actor/critic 均使用 45 维本体观测，输出 12 维外部关节顺序动作。
+- `go2_blind_stair_loco_forward_finetune`：从既有低层权重进行头朝前正向下行微调，观测、动作和控制契约与原低层任务完全一致。
 - `go2_pos_stairs_minimal`：保留 350 维上层观测和三维速度接口，21 条射线恒为最大距离，不创建相机、不查询高度感知结果。
 - 低层控制固定为 50 Hz、action scale 0.25、`Kp=30`、`Kd=0.75`。TorchScript 加载时逐项检查观测布局、12 个关节顺序、默认角、PD、频率和模型哈希。
 - 最简房间保留五级 `0.08 m x 0.30 m` 台阶和 `0.40 m` 高台，移除 33 个低矮盒体；原 `go2_pos_depth_stairs` 不变。
 
-终止原因仅有 `success / stair_stuck / fall_or_contact / timeout / other_stuck`。`episode_length >= max_episode_length` 即 timeout；timeout 与 success 同步触发时只记录 timeout。成功还要求正确台面高度、真实完整跨越、目标平面距离小于 0.5 m，并连续保持 12 步。
+终止原因仅有 `success / stair_stuck / fall_or_contact / timeout / other_stuck`。`episode_length >= max_episode_length` 即 timeout；timeout 与 success 同步触发时只记录 timeout。成功还要求正确台面高度、目标平面距离小于 0.5 m、机身朝向目标、基座越过台阶外缘至少 0.8 m、四足完全进入目标平地，并连续保持 12 步。
 
 ## 环境
 
@@ -111,7 +112,51 @@ python training/legged_gym/legged_gym/scripts/evaluate_stairs_minimal.py \
   --output_summary training/legged_gym/logs/Go2_pos_stairs_minimal/final_eval.json
 ```
 
-## Demo
+## 低层人工审查视频
+
+低层 checkpoint 的标准审查方式使用 `record_blind_stair_loco.py`，不是下文的上层导航录制器。当前录制契约为：
+
+- 使用课程第 6 行的五级 `0.08 m x 0.30 m` 训练台阶。
+- 关闭观测噪声、摩擦/质量随机化和外力扰动。
+- 上下行都发送机体系正向 `vx>0`；下行以 yaw=`pi` 使头部朝向世界下台阶方向。
+- 基座越过台阶外缘至少 0.8 m、四足越过外缘至少 0.05 m、足端位于目标平面、朝向误差不超过 20 度，并连续保持 12 步后才记为 `fully_cleared`。
+- 视频采用近距离跟随视角，默认 `960x540 @ 50 FPS`；画面显示 iteration、正向速度命令、局部位置、基座高度、朝向对齐值和四足离阶状态。
+- 每段视频同时输出逐步 CSV 和方向汇总 JSON，JSON 记录 checkpoint 路径、iteration 和 SHA256。任一试验未完整离阶时脚本返回失败。
+
+容器内带相机录制需要虚拟显示，不能使用关闭 graphics 的纯 headless 路径。单速度上下行复核命令：
+
+```bash
+CHECKPOINT=training/legged_gym/logs/Go2_blind_stair_loco_forward_finetune/<run>/model_<iteration>.pt
+OUTPUT_DIR=training/legged_gym/logs/Go2_blind_stair_loco_forward_finetune/<run>/review_model_<iteration>_fixed_sim
+
+xvfb-run -a -s '-screen 0 1280x720x24' \
+  conda run -n sea_nav python \
+  training/legged_gym/legged_gym/scripts/record_blind_stair_loco.py \
+  --task go2_blind_stair_loco_forward_finetune \
+  --direction up --speeds 0.40 \
+  --checkpoint "$CHECKPOINT" --output_dir "$OUTPUT_DIR" \
+  --max_steps 1000 --fps 50 --width 960 --height 540
+
+xvfb-run -a -s '-screen 0 1280x720x24' \
+  conda run -n sea_nav python \
+  training/legged_gym/legged_gym/scripts/record_blind_stair_loco.py \
+  --task go2_blind_stair_loco_forward_finetune \
+  --direction down --speeds 0.40 \
+  --checkpoint "$CHECKPOINT" --output_dir "$OUTPUT_DIR" \
+  --max_steps 1000 --fps 50 --width 960 --height 540
+```
+
+省略 `--speeds` 时，每个方向依次录制 `0.25/0.40/0.55/0.70 m/s` 四段。人工审查应优先查看原始分段视频和 CSV/JSON；合并视频只用于便捷观看。
+
+2026-07-31 的 model 250 复核产物：
+
+```text
+training/legged_gym/logs/Go2_blind_stair_loco_forward_finetune/07_31_17-18-25_from_2800_forward_lr1e4_0731a/review_model_250_fixed_sim/model_250_fixed_sim_review.mp4
+```
+
+该次 `0.40 m/s` 结果为：上行 `fully_cleared`（6.00 s），下行 `fully_cleared`（5.72 s）。
+
+## 上层导航 Demo
 
 分别录制一个成功上行和下行回合；脚本在回合不是 success 时返回失败，避免误提交 timeout 视频：
 

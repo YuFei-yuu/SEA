@@ -163,3 +163,43 @@ class Go2BlindStairLocoCfgPPO(LeggedRobotCfgPPO):
         num_steps_per_env = 24
         max_iterations = 3000
         save_interval = 100
+
+
+class Go2BlindStairForwardFinetuneCfg(Go2BlindStairLocoCfg):
+    """Corrected forward-descent mix and gait-quality rewards for weight-only tuning."""
+
+    class terrain(Go2BlindStairLocoCfg.terrain):
+        terrain_proportions = [0.1, 0.2, 0.7]
+        min_init_terrain_level = 6
+        max_init_terrain_level = 9
+
+    class rewards(Go2BlindStairLocoCfg.rewards):
+        class scales(Go2BlindStairLocoCfg.rewards.scales):
+            tracking_lin_vel = 3.0
+            directional_progress = 2.5
+            orientation = -1.0
+            ang_vel_xy = -0.10
+            torques = -5.0e-5
+            torque_peaks = -2.0e-4
+            powers = -2.0e-5
+            dof_acc = -5.0e-7
+            action_rate = -0.03
+            feet_air_time = 0.20
+            feet_contact_forces = -3.0e-4
+            feet_height_body = -2.0
+            feet_slip = -0.20
+            joint_pos_penalty = -0.50
+
+        soft_torque_peak = 0.75
+
+
+class Go2BlindStairForwardFinetuneCfgPPO(Go2BlindStairLocoCfgPPO):
+    class algorithm(Go2BlindStairLocoCfgPPO.algorithm):
+        learning_rate = 1.0e-4
+        schedule = "fixed"
+
+    class runner(Go2BlindStairLocoCfgPPO.runner):
+        experiment_name = "Go2_blind_stair_loco_forward_finetune"
+        run_name = "from_2800_weights_only"
+        max_iterations = 600
+        save_interval = 50
