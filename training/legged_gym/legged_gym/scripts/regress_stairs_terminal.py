@@ -43,8 +43,13 @@ def main():
         env.base_lin_vel[:, 0] = 0.5
         env.base_ang_vel.zero_()
         env.navigation_direction.fill_(1)
+        env.root_states[:, 3:7] = 0.0
+        env.root_states[:, 6] = 1.0
+        env.base_quat[:] = env.root_states[:, 3:7]
+        env.feet_pos.zero_()
         env.distance.fill_(1.0)
         env.stair_crossed.zero_()
+        env.fully_cleared.zero_()
         env.stair_progress_steps.zero_()
         env.stair_progress_anchor.copy_(env.root_states[:, 0])
         env.goal_hold_timer.zero_()
@@ -52,11 +57,16 @@ def main():
         env.terminal_reason.zero_()
         env.episode_length_buf.fill_(10)
 
+    def make_up_fully_cleared(env_id):
+        env.root_states[env_id, 0] = env.room_origins[env_id, 0] + 7.2
+        env.root_states[env_id, 2] = env.base_init_state[2] + 0.40
+        env.feet_pos[env_id, :, 0] = env.room_origins[env_id, 0] + 6.4
+        env.feet_pos[env_id, :, 2] = 0.40
+        env.distance[env_id] = 0.1
+
     clear_terminal_state()
     leave_id = 2
-    env.root_states[leave_id, 0] = env.room_origins[leave_id, 0] + 7.2
-    env.root_states[leave_id, 2] = env.base_init_state[2] + 0.40
-    env.distance[leave_id] = 0.1
+    make_up_fully_cleared(leave_id)
     env.stair_crossed[leave_id] = True
     for _ in range(6):
         env.check_termination()
@@ -80,6 +90,8 @@ def main():
     wrong_height_id = 1
     env.root_states[wrong_height_id, 0] = room_x[wrong_height_id] + 7.2
     env.root_states[wrong_height_id, 2] = env.base_init_state[2]
+    env.feet_pos[wrong_height_id, :, 0] = room_x[wrong_height_id] + 6.4
+    env.feet_pos[wrong_height_id, :, 2] = 0.0
     env.distance[wrong_height_id] = 0.1
     env.stair_crossed[wrong_height_id] = True
 
@@ -90,9 +102,7 @@ def main():
     simultaneous_id = 3
     success_id = 4
     for env_id in (simultaneous_id, success_id):
-        env.root_states[env_id, 0] = room_x[env_id] + 7.2
-        env.root_states[env_id, 2] = env.base_init_state[2] + 0.40
-        env.distance[env_id] = 0.1
+        make_up_fully_cleared(env_id)
         env.stair_crossed[env_id] = True
         env.goal_hold_timer[env_id] = env.cfg.env.goal_reached_time - 1
     env.episode_length_buf[simultaneous_id] = int(env.max_episode_length)

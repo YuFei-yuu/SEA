@@ -11,6 +11,7 @@ import sys
 
 import isaacgym
 import torch
+from isaacgym.torch_utils import quat_from_euler_xyz
 
 from legged_gym.envs import *
 from legged_gym.utils import get_args, task_registry
@@ -70,6 +71,10 @@ def main():
     env.root_states[:, 2] = env.base_init_state[2] + torch.where(
         is_up, torch.zeros_like(speed_tensor), torch.full_like(speed_tensor, 0.40)
     )
+    zeros = torch.zeros(num_envs, device=device)
+    yaw = torch.where(is_up, zeros, torch.full_like(zeros, torch.pi))
+    env.root_states[:, 3:7] = quat_from_euler_xyz(zeros, zeros, yaw)
+    env.base_quat[:] = env.root_states[:, 3:7]
     env.root_states[:, 7:13] = 0.0
     env.navigation_direction[:] = torch.where(
         is_up,
@@ -94,12 +99,11 @@ def main():
     env.stay_timer.zero_()
     env.episode_length_buf.zero_()
     commands = torch.zeros(num_envs, 3, device=device)
-    commands[:, 0] = torch.where(is_up, speed_tensor, -speed_tensor)
+    commands[:, 0] = speed_tensor
     max_x = env.root_states[:, 0] - env.room_origins[:, 0]
     min_x = max_x.clone()
     max_z = env.root_states[:, 2].clone()
     min_z = max_z.clone()
-    height_tolerance = float(env.cfg.depth_stairs.height_tolerance)
     fall = torch.zeros(num_envs, dtype=torch.bool, device=device)
     stuck = torch.zeros_like(fall)
     finished = torch.zeros_like(fall)
@@ -124,15 +128,7 @@ def main():
             fall |= fall_now
             stuck |= stuck_now
 
-            up_crossed = (local_x >= 6.30) & (
-                torch.abs(env.root_states[:, 2] - (env.base_init_state[2] + 0.40))
-                <= height_tolerance
-            )
-            down_crossed = (local_x <= 4.50) & (
-                torch.abs(env.root_states[:, 2] - env.base_init_state[2])
-                <= height_tolerance
-            )
-            crossed = torch.where(is_up, up_crossed, down_crossed) & active
+            crossed = env.fully_cleared & active
             crossing_hold = torch.where(
                 crossed, crossing_hold + 1, torch.zeros_like(crossing_hold)
             )

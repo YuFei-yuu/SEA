@@ -13,6 +13,7 @@ import torch
 from legged_gym.envs.go2.go2_blind_stair_loco_config import Go2BlindStairLocoCfg
 from legged_gym.envs.base.legged_robot_pos_stairs_minimal import (
     exclusive_terminal_masks,
+    stair_fully_cleared,
     stair_progress_is_stuck,
     stair_success_eligible,
     timeout_reached,
@@ -167,6 +168,36 @@ class TestMinimalStairs(unittest.TestCase):
             0.15,
         )
         self.assertEqual(stuck.tolist(), [True, False, False, False])
+
+    def test_full_clearance_requires_base_and_all_feet_on_destination_deck(self):
+        cleared = stair_fully_cleared(
+            torch.tensor([7.10, 7.10, 4.00]),
+            torch.tensor(
+                [
+                    [6.36, 6.36, 6.36, 6.20],
+                    [6.36, 6.36, 6.36, 6.36],
+                    [4.70, 4.70, 4.70, 4.70],
+                ]
+            ),
+            torch.tensor([True, True, False]),
+            stair_start_x=4.80,
+            stair_end_x=6.30,
+            base_clearance=0.80,
+            foot_margin=0.05,
+        )
+        self.assertEqual(cleared.tolist(), [False, True, True])
+
+    def test_full_clearance_rejects_base_near_stair_edge(self):
+        cleared = stair_fully_cleared(
+            torch.tensor([6.90, 4.20]),
+            torch.tensor([[6.40] * 4, [4.70] * 4]),
+            torch.tensor([True, False]),
+            stair_start_x=4.80,
+            stair_end_x=6.30,
+            base_clearance=0.80,
+            foot_margin=0.05,
+        )
+        self.assertEqual(cleared.tolist(), [False, False])
 
     def test_terminal_masks_are_exclusive(self):
         candidates = torch.ones(3, dtype=torch.bool)

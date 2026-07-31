@@ -367,7 +367,7 @@ down_04_070cms.mp4  crossed, 3.34 s
 training/legged_gym/legged_gym/scripts/record_blind_stair_loco.py
 ```
 
-## 10. 人工审查发现的设计偏差（继续训练前必须修正）
+## 10. 人工审查发现的设计偏差（问题定义）
 
 ### 10.1 下行方向错误：当前是倒退下台阶
 
@@ -443,8 +443,48 @@ body_forward_velocity > 0
 5. 重新执行四速度上/下行 gate，并录制八段人工审查视频。
 6. 只有“头在前正向下行”和“上下行四足完整离阶”都满足后，才进入上层 100 回合评测。
 
-在这两项修正完成前，当前 2800 模型状态应标记为：
+在这两项仿真修正完成前，2800 模型状态应标记为：
 
 ```text
 工程链路可运行，但运动方向与完成边界不符合最终需求，不可验收。
 ```
+
+## 11. 修复后仿真复核（未训练）
+
+已在仿真契约中完成第 10 节两项修正，本次没有调用训练入口，也没有更新 2800 checkpoint 或 TorchScript 权重。
+
+实现内容：
+
+- 下行 spawn yaw 设置为 `pi`，机器人头部朝世界下台阶方向。
+- 上行和下行都发送机体系正向 `vx>0`；下行不再使用负 `vx` 倒退。
+- 完成条件改为：基座越过台阶外缘 `0.8 m`、四足全部越过台阶外缘、足端位于目标平面、机身朝向目标，并连续保持 12 个控制步。
+- 最简导航、低层训练环境、gate 和录制器使用同一方向/离阶定义。
+- `stair_stuck` 检测区域延伸到完整离阶边界，最后一级外侧停滞不能提前算成功。
+
+使用原始 `model_2800.pt` 在 `0.08 m x 0.30 m` 五级台阶、`0.40 m/s` 正向命令下各执行一次：
+
+```text
+上行：fully_cleared，6.52 s，最终局部 x=+3.9134 m，四足完全离阶
+下行：fully_cleared，7.16 s，最终局部 x=-3.9097 m，四足完全离阶
+```
+
+下行全程命令为机体系 `vx=+0.40 m/s`，最小目标朝向对齐值为 `0.9447`，满足 20 度朝向约束；这是头在前的正向下台阶，不是倒退。
+
+合并人工审查视频：
+
+```text
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/model_2800_fixed_sim_review.mp4
+```
+
+分段视频、逐步轨迹和摘要：
+
+```text
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/up_01_040cms.mp4
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/down_01_040cms.mp4
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/up_01_040cms.csv
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/down_01_040cms.csv
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/up_summary.json
+/home/sea_ws/src/training/legged_gym/logs/Go2_blind_stair_loco/review_2800_fixed_sim/down_summary.json
+```
+
+本次只是单次确定性人工复核，不替代修正后四速度、多回合 gate；是否继续训练应在人工确认该视频姿态满足预期后决定。

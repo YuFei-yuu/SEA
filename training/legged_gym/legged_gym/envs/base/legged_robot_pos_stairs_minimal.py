@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
+
 import torch
+from isaacgym.torch_utils import quat_apply, quat_from_euler_xyz
 
 from legged_gym.envs.base.legged_robot_pos_dynamic import LeggedRobotPosDynamic
 
@@ -31,6 +34,25 @@ def update_consecutive_timer(timer, condition):
 
 def stair_success_eligible(distance, correct_height, stair_crossed, distance_threshold):
     return (distance < distance_threshold) & correct_height & stair_crossed
+
+
+def stair_fully_cleared(
+    base_x,
+    feet_x,
+    up,
+    stair_start_x,
+    stair_end_x,
+    base_clearance,
+    foot_margin,
+):
+    """Require the base and all four feet to enter the destination deck."""
+    up_clear = (base_x >= stair_end_x + base_clearance) & torch.all(
+        feet_x >= stair_end_x + foot_margin, dim=1
+    )
+    down_clear = (base_x <= stair_start_x - base_clearance) & torch.all(
+        feet_x <= stair_start_x - foot_margin, dim=1
+    )
+    return torch.where(up, up_clear, down_clear)
 
 
 def timeout_reached(episode_length, max_episode_length):
@@ -133,12 +155,27 @@ class LeggedRobotPosStairsMinimal(LeggedRobotPosDynamic):
     def _init_buffers(self):
         super()._init_buffers()
         self.stair_crossed = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        self.fully_cleared = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
         self.stair_progress_anchor = self.root_states[:, 0].clone()
         self.stair_progress_steps = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.terminal_reason = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
         self.correct_goal_height = torch.zeros(
             self.num_envs, dtype=torch.bool, device=self.device
         )
+
+    def _reset_root_states(self, env_ids):
+        super()._reset_root_states(env_ids)
+        if len(env_ids) == 0:
+            return
+        zeros = torch.zeros(len(env_ids), device=self.device)
+        yaw = torch.where(
+            self.navigation_direction[env_ids] > 0,
+            zeros,
+            torch.full_like(zeros, torch.pi),
+        )
+        self.root_states[env_ids, 3:7] = quat_from_euler_xyz(zeros, zeros, yaw)
+        self.base_quat[env_ids] = self.root_states[env_ids, 3:7]
+        self._set_robot_root_states(env_ids)
 
     def _get_rays(self, env_ids=None):
         if env_ids is not None:
@@ -198,19 +235,43 @@ class LeggedRobotPosStairsMinimal(LeggedRobotPosDynamic):
         low_height_error = torch.abs(self.root_states[:, 2] - self.base_init_state[2])
         high_enough = high_height_error <= cfg.height_tolerance
         low_enough = low_height_error <= cfg.height_tolerance
-        crossed_now = torch.where(
+        feet_local_x = self.feet_pos[:, :, 0] - self.room_origins[:, None, 0]
+        position_cleared = stair_fully_cleared(
+            local_x,
+            feet_local_x,
             up,
-            (local_x >= cfg.platform_start_x) & high_enough,
-            (local_x <= self.cfg.terrain.stair_start_x - 0.30) & low_enough,
+            float(self.cfg.terrain.stair_start_x),
+            float(cfg.platform_start_x),
+            float(cfg.stair_clearance_distance),
+            float(cfg.foot_clearance_margin),
         )
+        target_surface_z = torch.where(
+            up,
+            torch.full_like(local_x, float(cfg.platform_height)),
+            torch.zeros_like(local_x),
+        )
+        feet_on_target_height = torch.all(
+            torch.abs(self.feet_pos[:, :, 2] - target_surface_z[:, None])
+            <= float(cfg.foot_height_tolerance),
+            dim=1,
+        )
+        body_forward = torch.zeros(self.num_envs, 3, device=self.device)
+        body_forward[:, 0] = 1.0
+        forward_world = quat_apply(self.root_states[:, 3:7], body_forward)
+        heading_alignment = forward_world[:, 0] * self.navigation_direction.float()
+        heading_aligned = heading_alignment >= math.cos(
+            math.radians(float(cfg.heading_tolerance_deg))
+        )
+        self.fully_cleared = position_cleared & feet_on_target_height & heading_aligned
+        correct_height = torch.where(up, high_enough, low_enough)
+        crossed_now = self.fully_cleared & correct_height
         self.stair_crossed |= crossed_now
 
-        correct_height = torch.where(up, high_enough, low_enough)
         self.correct_goal_height = correct_height
         success_eligible = stair_success_eligible(
             self.distance,
             correct_height,
-            self.stair_crossed,
+            self.stair_crossed & self.fully_cleared,
             self.cfg.rewards.reach_pos_target_tight_config.distance_threshold,
         )
         self.goal_hold_timer = update_consecutive_timer(
@@ -311,6 +372,7 @@ class LeggedRobotPosStairsMinimal(LeggedRobotPosDynamic):
         episode["stair_stuck_rate"] = (reason == TERMINAL_STAIR_STUCK).float().mean()
         episode["exclusive_timeout_rate"] = (reason == TERMINAL_TIMEOUT).float().mean()
         self.stair_crossed[env_ids] = False
+        self.fully_cleared[env_ids] = False
         self.stair_progress_anchor[env_ids] = self.root_states[env_ids, 0]
         self.stair_progress_steps[env_ids] = 0
         self.terminal_reason[env_ids] = TERMINAL_NONE
@@ -319,4 +381,4 @@ class LeggedRobotPosStairsMinimal(LeggedRobotPosDynamic):
 
     def _reward_reach_pos_target_tight(self):
         reward = super()._reward_reach_pos_target_tight()
-        return reward * self.correct_goal_height * self.stair_crossed
+        return reward * self.correct_goal_height * self.stair_crossed * self.fully_cleared

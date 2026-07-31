@@ -41,7 +41,11 @@ class Go2PosStairsMinimalCfg(Go2PosDepthStairsCfg):
         # The position policy settles the Go2 base near 0.28 m although it is
         # spawned at 0.42 m. This still leaves a 0.24 m margin to the wrong deck.
         height_tolerance = 0.16
-        stair_stuck_x_range = [4.50, 6.60]
+        stair_clearance_distance = 0.80
+        foot_clearance_margin = 0.05
+        foot_height_tolerance = 0.18
+        heading_tolerance_deg = 20.0
+        stair_stuck_x_range = [4.00, 7.10]
         stair_stuck_window_steps = 100
         stair_stuck_min_progress = 0.15
 

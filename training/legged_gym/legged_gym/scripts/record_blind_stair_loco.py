@@ -11,6 +11,7 @@ import sys
 
 import cv2
 from isaacgym import gymapi
+from isaacgym.torch_utils import quat_apply
 import torch
 
 from legged_gym.envs import *
@@ -30,6 +31,7 @@ def parse_args():
     parser.add_argument("--max_steps", type=int, default=1000)
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--speeds", type=float, nargs="+", default=DEFAULT_SPEEDS)
     known, remaining = parser.parse_known_args()
     sys.argv = [sys.argv[0]] + remaining
     return known, get_args()
@@ -75,14 +77,26 @@ def configure_environment(env_cfg, direction):
     env_cfg.domain_rand.push_robots = False
 
 
-def put_label(frame, direction, speed, trial, step, local_x, z):
+def put_label(
+    frame,
+    direction,
+    speed,
+    trial,
+    trial_count,
+    step,
+    local_x,
+    z,
+    heading_alignment,
+    all_feet_clear,
+):
     lines = (
-        f"model 2800 | {direction} | trial {trial}/4",
-        f"command vx: {speed if direction == 'up' else -speed:+.2f} m/s",
+        f"model 2800 | fixed sim | {direction} | trial {trial}/{trial_count}",
+        f"forward command vx: {speed:+.2f} m/s",
         f"step: {step:04d} | local x: {local_x:+.2f} m | base z: {z:.2f} m",
+        f"heading alignment: {heading_alignment:+.2f} | all feet clear: {int(all_feet_clear)}",
     )
     overlay = frame.copy()
-    cv2.rectangle(overlay, (14, 12), (590, 116), (18, 18, 18), -1)
+    cv2.rectangle(overlay, (14, 12), (690, 147), (18, 18, 18), -1)
     cv2.addWeighted(overlay, 0.58, frame, 0.42, 0, frame)
     for line_index, line in enumerate(lines):
         cv2.putText(
@@ -114,13 +128,14 @@ def record_trial(
     direction,
     speed,
     trial,
+    trial_count,
     fps,
     max_steps,
     frame_size,
 ):
     env_id = torch.arange(1, device=env.device)
     obs = reset_trial(env, env_id)
-    command_x = speed if direction == "up" else -speed
+    command_x = speed
     direction_sign = 1.0 if direction == "up" else -1.0
     env.commands.zero_()
     env.commands[:, 0] = command_x
@@ -140,6 +155,14 @@ def record_trial(
     trajectory = []
     crossing_hold = 0
     outcome = "max_steps"
+    stair_edge = (
+        0.5 * float(env.cfg.terrain.blind_stair_platform_size)
+        + int(env.cfg.terrain.blind_stair_count)
+        * float(env.cfg.terrain.blind_stair_tread)
+    )
+    base_clearance = 0.80
+    foot_margin = 0.05
+    heading_threshold = float(torch.cos(torch.tensor(torch.pi / 9.0)).item())
     with torch.no_grad():
         for step in range(max_steps):
             env.commands.zero_()
@@ -164,8 +187,24 @@ def record_trial(
             xyz = env.root_states[0, :3].detach().cpu().tolist()
             local_x = xyz[0] - origin[0]
             directed_x = direction_sign * local_x
-            crossed = directed_x >= 3.15 and abs(xyz[2] - 0.29) <= 0.20
-            crossing_hold = crossing_hold + 1 if crossed else 0
+            feet_local_x = env.feet_pos[0, :, 0] - env.env_origins[0, 0]
+            all_feet_clear = bool(
+                torch.all(direction_sign * feet_local_x >= stair_edge + foot_margin).item()
+            )
+            forward_local = torch.tensor([[1.0, 0.0, 0.0]], device=env.device)
+            forward_world = quat_apply(env.root_states[0:1, 3:7], forward_local)
+            heading_alignment = float((direction_sign * forward_world[0, 0]).item())
+            feet_on_target_height = bool(
+                torch.all(torch.abs(env.feet_pos[0, :, 2]) <= 0.18).item()
+            )
+            fully_cleared = (
+                directed_x >= stair_edge + base_clearance
+                and all_feet_clear
+                and feet_on_target_height
+                and abs(xyz[2] - 0.29) <= 0.20
+                and heading_alignment >= heading_threshold
+            )
+            crossing_hold = crossing_hold + 1 if fully_cleared else 0
             trajectory.append(
                 {
                     "step": step,
@@ -175,7 +214,9 @@ def record_trial(
                     "y": xyz[1],
                     "z": xyz[2],
                     "local_x": local_x,
-                    "crossed": int(crossed),
+                    "heading_alignment": heading_alignment,
+                    "all_feet_clear": int(all_feet_clear),
+                    "fully_cleared": int(fully_cleared),
                 }
             )
 
@@ -184,11 +225,22 @@ def record_trial(
                 env.sim, env.envs[0], camera, gymapi.IMAGE_COLOR
             ).reshape(frame_size[1], frame_size[0], 4)
             frame = cv2.cvtColor(rgba[:, :, :3], cv2.COLOR_RGB2BGR)
-            put_label(frame, direction, speed, trial, step, local_x, xyz[2])
+            put_label(
+                frame,
+                direction,
+                speed,
+                trial,
+                trial_count,
+                step,
+                local_x,
+                xyz[2],
+                heading_alignment,
+                all_feet_clear,
+            )
             video.write(frame)
 
             if crossing_hold >= 12:
-                outcome = "crossed"
+                outcome = "fully_cleared"
                 break
             if bool(dones[0].item()):
                 outcome = "timeout" if bool(env.time_out_buf[0].item()) else "fall_or_contact"
@@ -210,6 +262,10 @@ def record_trial(
         "frames": len(trajectory),
         "duration_s": len(trajectory) * env.dt,
         "max_directed_local_x": max(directed_positions),
+        "min_heading_alignment": min(
+            row["heading_alignment"] for row in trajectory
+        ),
+        "all_feet_clear_at_end": trajectory[-1]["all_feet_clear"],
         "final_local_x": trajectory[-1]["local_x"],
         "final_base_z": trajectory[-1]["z"],
         "video": os.path.abspath(video_path),
@@ -225,6 +281,8 @@ def main():
     if not os.path.isfile(checkpoint_path):
         raise FileNotFoundError(checkpoint_path)
     os.makedirs(record_args.output_dir, exist_ok=True)
+    if not record_args.speeds or any(speed <= 0.0 for speed in record_args.speeds):
+        raise ValueError("--speeds must contain positive forward speeds")
 
     env_cfg, _ = task_registry.get_cfgs(args.task)
     configure_environment(env_cfg, record_args.direction)
@@ -245,7 +303,7 @@ def main():
         raise RuntimeError("Could not create the Isaac Gym review camera")
 
     results = []
-    for trial, speed in enumerate(DEFAULT_SPEEDS, start=1):
+    for trial, speed in enumerate(record_args.speeds, start=1):
         speed_tag = f"{int(round(speed * 100)):03d}"
         stem = f"{record_args.direction}_{trial:02d}_{speed_tag}cms"
         result = record_trial(
@@ -257,6 +315,7 @@ def main():
             record_args.direction,
             speed,
             trial,
+            len(record_args.speeds),
             record_args.fps,
             record_args.max_steps,
             (record_args.width, record_args.height),
@@ -271,6 +330,9 @@ def main():
         "checkpoint_sha256": sha256(checkpoint_path),
         "terrain_step_height_m": 0.08,
         "terrain_tread_depth_m": 0.30,
+        "base_clearance_m": 0.80,
+        "foot_clearance_margin_m": 0.05,
+        "forward_body_command_only": True,
         "direction": record_args.direction,
         "trials": results,
     }

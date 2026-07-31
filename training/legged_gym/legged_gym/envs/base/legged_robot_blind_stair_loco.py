@@ -2,6 +2,7 @@
 
 import torch
 from isaacgym import gymtorch
+from isaacgym.torch_utils import quat_from_euler_xyz
 
 from legged_gym.envs.base.legged_robot import LeggedRobot
 from legged_gym.low_level import (
@@ -78,6 +79,11 @@ class LeggedRobotBlindStairLoco(LeggedRobot):
             self.root_states[stair_ids, 1] = self.env_origins[stair_ids, 1] + torch.empty(
                 len(stair_ids), device=self.device
             ).uniform_(-0.5, 0.5)
+        if len(down_ids) > 0:
+            zeros = torch.zeros(len(down_ids), device=self.device)
+            yaw = torch.full_like(zeros, torch.pi)
+            self.root_states[down_ids, 3:7] = quat_from_euler_xyz(zeros, zeros, yaw)
+            self.base_quat[down_ids] = self.root_states[down_ids, 3:7]
         stair_ids = torch.cat((up_ids, down_ids))
         if len(stair_ids) > 0:
             stair_ids_int32 = stair_ids.to(dtype=torch.int32)
@@ -97,7 +103,7 @@ class LeggedRobotBlindStairLoco(LeggedRobot):
         up_ids = env_ids[(types >= flat_end) & (types < up_end)]
         down_ids = env_ids[types >= up_end]
         gate_speeds = torch.tensor((0.25, 0.40, 0.55, 0.70), device=self.device)
-        for stair_ids, direction in ((up_ids, 1.0), (down_ids, -1.0)):
+        for stair_ids in (up_ids, down_ids):
             if len(stair_ids) == 0:
                 continue
             if bool(getattr(self.cfg.commands, "low_speed_focus", False)):
@@ -112,7 +118,9 @@ class LeggedRobotBlindStairLoco(LeggedRobot):
                 speed_indices = torch.randint(
                     0, len(gate_speeds), (len(stair_ids),), device=self.device
                 )
-            self.commands[stair_ids, 0] = direction * gate_speeds[speed_indices]
+            # Both stair directions use forward body-frame velocity. Downward
+            # world motion is produced by spawning the robot at yaw=pi.
+            self.commands[stair_ids, 0] = gate_speeds[speed_indices]
             self.commands[stair_ids, 1:3] = 0.0
 
     def compute_observations(self):
