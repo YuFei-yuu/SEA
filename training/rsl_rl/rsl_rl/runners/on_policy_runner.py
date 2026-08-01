@@ -138,7 +138,17 @@ class OnPolicyRunner:
             mean_num_sim = 0
             with torch.no_grad():
                 for i in range(self.num_steps_per_env):
-                    actions = self.alg.act(obs, critic_obs)
+                    passability_targets = None
+                    if hasattr(self.env, "get_passability_targets"):
+                        passability_targets = self.env.get_passability_targets()
+                    actions = self.alg.act(
+                        obs, critic_obs, passability_targets=passability_targets
+                    )
+                    if hasattr(self.env, "record_policy_action_diagnostics"):
+                        self.env.record_policy_action_diagnostics(
+                            getattr(self.alg.actor_critic, "u_bar", None),
+                            getattr(self.alg.actor_critic, "u_safe", getattr(self.alg.actor_critic, "u_s", None)),
+                        )
                     diagnostics = getattr(self.alg.actor_critic, "diagnostics", {})
                     if diagnostics:
                         for key in action_diag_keys:
@@ -195,7 +205,9 @@ class OnPolicyRunner:
                     self.print_log(locals(), extra=True)
             if it == self.current_learning_iteration + 100:
                 os.makedirs(self.log_dir, exist_ok=True)
-            if it % self.save_interval == 0 and it > self.current_learning_iteration + 100:
+            # Keep regular checkpoints available for fixed unseen-seed model
+            # selection; the latest iteration is not necessarily safest.
+            if it % self.save_interval == 0 and it > self.current_learning_iteration:
                 self.save(os.path.join(self.log_dir, 'model_{}.pt'.format(it)))
             ep_infos.clear()
         
@@ -223,6 +235,7 @@ class OnPolicyRunner:
             'regularization_loss': float(locs['mean_regularization_loss']),
             'smooth_loss': float(locs['mean_smooth_loss']),
             'intervention_loss': float(locs['mean_interv_loss']),
+            'passability_loss': float(getattr(self.alg, 'last_passability_loss', 0.0)),
             'mean_action_std': mean_action_std,
             'mean_reward': float(statistics.mean(locs['rewbuffer'])),
             'mean_episode_length': float(statistics.mean(locs['lenbuffer'])),

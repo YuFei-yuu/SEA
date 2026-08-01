@@ -47,6 +47,7 @@ class RolloutStorage:
             self.action_sigma = None
             self.hidden_states = None
             self.bad_masks = None
+            self.passability_targets = None
         
         def clear(self):
             self.__init__()
@@ -66,6 +67,9 @@ class RolloutStorage:
         self.actions = torch.zeros(num_transitions_per_env, num_envs, *actions_shape, device=self.device)
         self.dones = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
         self.bad_masks = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device).byte()
+        self.passability_targets = torch.full(
+            (num_transitions_per_env, num_envs), -1, device=self.device, dtype=torch.long
+        )
 
         # For PPO
         self.actions_log_prob = torch.zeros(num_transitions_per_env, num_envs, 1, device=self.device)
@@ -95,6 +99,10 @@ class RolloutStorage:
         self.dones[self.step].copy_(transition.dones.view(-1, 1))
         if transition.bad_masks is not None:
             self.bad_masks[self.step].copy_(transition.bad_masks.view(-1, 1))
+        if transition.passability_targets is not None:
+            self.passability_targets[self.step].copy_(
+                transition.passability_targets.view(-1).long()
+            )
         self.values[self.step].copy_(transition.values)
     
         self.actions_log_prob[self.step].copy_(transition.actions_log_prob.view(-1, 1))
@@ -169,6 +177,7 @@ class RolloutStorage:
         old_actions_log_prob = self.actions_log_prob.flatten(0, 1)
         advantages = self.advantages.flatten(0, 1)
         bad_masks = self.bad_masks.flatten(0, 1)
+        passability_targets = self.passability_targets.flatten(0, 1)
         
         for epoch in range(num_epochs):
             for i in range(num_mini_batches):
@@ -187,14 +196,20 @@ class RolloutStorage:
                 old_mu_batch = self.mu.flatten(0, 1)[batch_idx]
                 old_sigma_batch = self.sigma.flatten(0, 1)[batch_idx]
                 bad_masks_batch = bad_masks[batch_idx]
+                passability_targets_batch = passability_targets[batch_idx]
                 
-                yield obs_batch, next_obs_batch, actions_batch, \
-                    target_values_batch, advantages_batch, returns_batch, \
-                    old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, (None, None), None, bad_masks_batch
-   
-                       
-                
-                
-        
-
-                       
+                yield (
+                    obs_batch,
+                    next_obs_batch,
+                    actions_batch,
+                    target_values_batch,
+                    advantages_batch,
+                    returns_batch,
+                    old_actions_log_prob_batch,
+                    old_mu_batch,
+                    old_sigma_batch,
+                    (None, None),
+                    None,
+                    bad_masks_batch,
+                    passability_targets_batch,
+                )

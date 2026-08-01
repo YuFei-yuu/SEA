@@ -55,6 +55,7 @@ class PPO:
                  desired_kl=0.01,
                  enable_action_range_regularization=True,
                  enable_smoothness_regularization=True,
+                 passability_loss_coef=0.0,
                  device='cpu',
                  ):
 
@@ -87,6 +88,8 @@ class PPO:
         self.use_clipped_value_loss = use_clipped_value_loss
         self.enable_action_range_regularization = enable_action_range_regularization
         self.enable_smoothness_regularization = enable_smoothness_regularization
+        self.passability_loss_coef = float(passability_loss_coef)
+        self.last_passability_loss = 0.0
 
     def init_storage(self, num_envs, num_transitions_per_env, obs_shape, action_shape):
         self.storage = RolloutStorage(num_envs, num_transitions_per_env, obs_shape, action_shape, self.device)
@@ -134,7 +137,7 @@ class PPO:
         return total_loss
 
 
-    def act(self, obs, critic_obs):
+    def act(self, obs, critic_obs, passability_targets=None):
         if self.actor_critic.is_recurrent:
             self.transition.hidden_states = self.actor_critic.get_hidden_states()
         # Compute the actions and values
@@ -146,6 +149,8 @@ class PPO:
         self.transition.action_sigma = self.actor_critic.action_std.detach()
         self.transition.observations = obs
         self.transition.critic_observations = critic_obs
+        if passability_targets is not None:
+            self.transition.passability_targets = passability_targets.detach().clone().long()
         return self.transition.actions
     
     def process_env_step(self, next_obs, rewards, dones, infos):
@@ -174,6 +179,7 @@ class PPO:
         mean_smooth_loss = 0.
         mean_regularization_loss = 0.
         mean_interv_loss = 0.0
+        mean_passability_loss = 0.0
         if self.actor_critic.is_recurrent:
             generator = self.storage.reccurent_mini_batch_generator(self.num_mini_batches, self.num_learning_epochs)
         else:
@@ -181,7 +187,7 @@ class PPO:
             
         for obs_batch, next_obs_batch, actions_batch, \
                 target_values_batch, advantages_batch, returns_batch, \
-                old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, bad_masks_batch in generator:
+                old_actions_log_prob_batch, old_mu_batch, old_sigma_batch, hid_states_batch, masks_batch, bad_masks_batch, passability_targets_batch in generator:
 
                 valid_mask = (~bad_masks_batch.bool()).flatten()
                 
@@ -254,6 +260,17 @@ class PPO:
                 regularization_loss = range_loss + 0.05 * smooth_loss
                 loss += 1.0 * regularization_loss
 
+                passability_loss = torch.zeros((), device=mu_batch.device)
+                passability_logits = getattr(self.actor_critic, "passability_logits", None)
+                if self.passability_loss_coef > 0.0 and passability_logits is not None:
+                    target_mask = (passability_targets_batch >= 0) & valid_mask
+                    if target_mask.any():
+                        passability_loss = F.cross_entropy(
+                            passability_logits[target_mask],
+                            passability_targets_batch[target_mask],
+                        )
+                        loss += self.passability_loss_coef * passability_loss
+
                 if hasattr(self.actor_critic, 'alpha'):
                     alpha_loss = self.compute_alpha_loss(self.actor_critic.alpha, alpha_min=1.0)
                 else:
@@ -279,6 +296,7 @@ class PPO:
                 mean_smooth_loss += smooth_loss.item()
                 mean_regularization_loss += regularization_loss.item()
                 mean_interv_loss += interv_loss.item()
+                mean_passability_loss += passability_loss.item()
 
         num_updates = self.num_learning_epochs * self.num_mini_batches
         mean_value_loss /= num_updates
@@ -286,6 +304,7 @@ class PPO:
         mean_regularization_loss /= num_updates
         mean_smooth_loss /= num_updates
         mean_interv_loss /= num_updates
+        self.last_passability_loss = mean_passability_loss / num_updates
 
         self.storage.clear()
 

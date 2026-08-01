@@ -228,7 +228,7 @@ python training/legged_gym/legged_gym/scripts/record_stairs_minimal.py \
   --output_dir training/legged_gym/logs/Go2_pos_stairs_minimal/08_01_03-34-44_/videos_5_trials
 ```
 
-视频与同名轨迹 CSV 分别保存为 `up_trial_01..05` 和 `down_trial_01..05`。10 段均为 actor 成功回合；相机使用贴近机器人移动的跟随视角，视频无文字、目标点或射线标识。逐段轨迹的台阶段横向位移约 `0.21..1.46 m`，可直接核对机器人并非完全直上直下。
+视频与同名轨迹 CSV 分别保存为 `up_trial_01..05` 和 `down_trial_01..05`。10 段均为 actor 成功回合；相机使用贴近机器人移动的侧向跟随视角，并按起点横向位置选择房间内侧，避免边界墙遮挡开场。视频无文字、目标点或射线标识。逐段轨迹的台阶段横向位移约 `0.21..1.46 m`，可直接核对机器人并非完全直上直下。按上行 1--5、下行 1--5 顺序拼接后的总视频为 `videos_5_trials/all_10_trials_side.mp4`。
 
 最终提交以评测 CSV/JSON 的逐回合 `terminal_reason` 为准，不从聚合训练日志反推成功。验收要求上、下行各至少 15/20 成功，且 success 记录必须同时包含 `low_obstacle_collision_count=0`、`stair_crossed=1`、`fully_cleared=1`、`obstacle_field_crossed=1` 和 `whole_obstacle_zone_bypass=0`。
 

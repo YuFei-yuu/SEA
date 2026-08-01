@@ -7,6 +7,9 @@ from .base.legged_robot import LeggedRobot
 from .base.legged_robot_pos import LeggedRobotPos
 from .base.legged_robot_pos_dynamic import LeggedRobotPosDynamic
 from .base.legged_robot_pos_depth_stairs import LeggedRobotPosDepthStairs
+from .base.legged_robot_pos_depth_stairs_passability import (
+    LeggedRobotPosDepthStairsPassability,
+)
 from .base.legged_robot_blind_stair_loco import LeggedRobotBlindStairLoco
 from .base.legged_robot_pos_stairs_minimal import LeggedRobotPosStairsMinimal
 from .go2.go2_blind_stair_loco_config import (
@@ -34,6 +37,10 @@ from .go2.go2_pos_config import (
     Go2PosSparseStaticCfgPPO,
     Go2PosDepthStairsCfg,
     Go2PosDepthStairsCfgPPO,
+)
+from .go2.go2_depth_passability_config import (
+    Go2PosDepthStairsPassabilityCfg,
+    Go2PosDepthStairsPassabilityCfgPPO,
 )
 
 from legged_gym.utils.task_registry import task_registry
@@ -68,4 +75,10 @@ task_registry.register(
     LeggedRobotPosDepthStairs,
     Go2PosDepthStairsCfg(),
     Go2PosDepthStairsCfgPPO(),
+)
+task_registry.register(
+    "go2_pos_depth_stairs_passability",
+    LeggedRobotPosDepthStairsPassability,
+    Go2PosDepthStairsPassabilityCfg(),
+    Go2PosDepthStairsPassabilityCfgPPO(),
 )

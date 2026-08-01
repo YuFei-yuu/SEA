@@ -150,6 +150,13 @@ def update_cfg_from_args(env_cfg, cfg_train, args):
             and hasattr(env_cfg, "perception")
         ):
             env_cfg.perception.model_path = args.depth_model
+        if (
+            getattr(args, "depth_update_hz", None) is not None
+            and hasattr(env_cfg, "perception")
+        ):
+            if args.depth_update_hz <= 0.0:
+                raise ValueError("--depth_update_hz must be positive.")
+            env_cfg.perception.update_hz = args.depth_update_hz
         if getattr(args, "loco_backend", None) is not None and hasattr(env_cfg, "loco"):
             env_cfg.loco.backend = args.loco_backend
         if getattr(args, "loco_model", None) is not None and hasattr(env_cfg, "loco"):
@@ -188,6 +195,7 @@ def get_args():
         {"name": "--load_run", "type": str,  "help": "Name of the run to load when resume=True. If -1: will load the last run. Overrides config file if provided."},
         {"name": "--depth_mode", "type": str, "choices": ["oracle", "depth_predicted"], "help": "Perception source for go2_pos_depth_stairs."},
         {"name": "--depth_model", "type": str, "help": "Checkpoint from train_depth_rays.py for depth_predicted mode."},
+        {"name": "--depth_update_hz", "type": float, "help": "Depth camera update frequency during training/evaluation."},
         {"name": "--loco_backend", "type": str, "choices": ["slr", "blind_stair"], "help": "Low-level controller backend."},
         {"name": "--loco_model", "type": str, "help": "TorchScript model for the blind_stair backend."},
         {"name": "--loco_metadata", "type": str, "help": "Contract JSON for the blind_stair backend."},

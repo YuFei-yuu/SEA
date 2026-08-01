@@ -77,6 +77,12 @@ def _record_trial(env, policy, camera, camera_props, record_args, trial_index, s
     env.cfg.depth_stairs.eval_seed_base = seed
     env.eval_seed_round.zero_()
     obs, _ = env.reset()
+    start_local_y = float(
+        (env.root_states[0, 1] - env.room_origins[0, 1]).item()
+    )
+    # Stay on the room-interior side of the robot. This prevents the boundary
+    # wall from hiding low/high transverse starts while preserving a side view.
+    camera_side = 1.0 if start_local_y < 0.5 * float(env.terrain.env_width) else -1.0
     trajectory = []
     max_steps = record_args.max_steps or int(env.max_episode_length)
     terminal_reason = "incomplete"
@@ -84,10 +90,12 @@ def _record_trial(env, policy, camera, camera_props, record_args, trial_index, s
         for step in range(max_steps):
             root = env.root_states[0, :3]
             eye = gymapi.Vec3(
-                float(root[0] - 1.8), float(root[1] - 2.2), float(root[2] + 1.4)
+                float(root[0]),
+                float(root[1] + camera_side * 2.25),
+                float(root[2] + 1.05),
             )
             camera_target = gymapi.Vec3(
-                float(root[0] + 0.55), float(root[1]), float(root[2] + 0.05)
+                float(root[0]), float(root[1]), float(root[2] + 0.05)
             )
             env.gym.set_camera_location(camera, env.envs[0], eye, camera_target)
             actions = policy(obs)

@@ -19,6 +19,18 @@ from legged_gym.utils.torch_math import quat_apply_yaw, yaw_quat
 class LeggedRobotPosDepthStairs(LeggedRobotPosDynamic):
     """Static stair task whose actor receives only depth-predicted forward rays."""
 
+    def render(self, sync_frame_time=True):
+        """Avoid a second camera render on every headless simulation step.
+
+        ``_render_depth_and_predict`` explicitly renders cameras when the
+        configured sensor update is due.  The generic headless render path
+        would otherwise render all cameras again after every physics step,
+        making large-environment depth PPO prohibitively slow.
+        """
+        if self.viewer is None:
+            return
+        super().render(sync_frame_time)
+
     def _stairs_cfg(self):
         return self.cfg.depth_stairs
 
@@ -83,20 +95,25 @@ class LeggedRobotPosDepthStairs(LeggedRobotPosDynamic):
 
     def _init_buffers(self):
         super()._init_buffers()
-        if not getattr(self, "depth_camera_enabled", False):
-            raise RuntimeError("go2_pos_depth_stairs requires sensors.depth_cam.enable=True")
-
         cfg = self._stairs_cfg()
         perception_cfg = self.cfg.perception
         self.perception_mode = str(perception_cfg.mode)
         if self.perception_mode not in {"oracle", "depth_predicted"}:
             raise ValueError("perception.mode must be 'oracle' or 'depth_predicted'.")
+        if (
+            self.perception_mode == "depth_predicted"
+            and not getattr(self, "depth_camera_enabled", False)
+        ):
+            raise RuntimeError(
+                "depth_predicted mode requires sensors.depth_cam.enable=True"
+            )
 
         self.oracle_rays = self.rays.clone()
         self.depth_rays = self.rays.clone()
         self.depth_ray_mae = torch.zeros(self.num_envs, device=self.device)
         self.depth_ray_error_sum = torch.zeros(self.num_envs, device=self.device)
         self.depth_ray_error_count = torch.zeros(self.num_envs, device=self.device)
+        self.last_depth_render_step = -1
         camera_update_hz = float(perception_cfg.update_hz)
         if self.perception_mode == "oracle":
             camera_update_hz = float(perception_cfg.oracle_camera_update_hz)
@@ -129,6 +146,8 @@ class LeggedRobotPosDepthStairs(LeggedRobotPosDynamic):
         )
 
     def _render_depth_and_predict(self):
+        if not getattr(self, "depth_camera_enabled", False):
+            return
         if self.common_step_counter % self.camera_update_steps != 0:
             return
 
@@ -143,6 +162,7 @@ class LeggedRobotPosDepthStairs(LeggedRobotPosDynamic):
                 )
             )
         self.gym.end_access_image_tensors(self.sim)
+        self.last_depth_render_step = self.common_step_counter
 
         if self.depth_ray_model is None:
             return

@@ -30,6 +30,7 @@ from legged_gym.envs.base.legged_robot_pos_stairs_minimal import (
     update_consecutive_timer,
 )
 from legged_gym.utils.footprint_rays import ray_aabb_distances, room_footprint_boxes
+from legged_gym.utils.local_room_teacher import choose_local_waypoint, segment_clearance
 from legged_gym.utils.fixed_room_planner import (
     build_bidirectional_route_templates,
     build_occupancy_grid,
@@ -58,6 +59,28 @@ EXPECTED = {
 
 
 class TestMinimalStairs(unittest.TestCase):
+    def test_local_teacher_keeps_clear_goal_direct(self):
+        starts = torch.tensor([[0.0, 1.0]])
+        goals = torch.tensor([[5.0, 1.0]])
+        centers = torch.tensor([[2.0, 5.0]])
+        extents = torch.tensor([[0.25, 0.25]])
+        waypoint, direct, _, label = choose_local_waypoint(starts, goals, centers, extents)
+        self.assertTrue(direct.item())
+        self.assertEqual(label.item(), 0)
+        self.assertTrue(torch.allclose(waypoint, goals))
+
+    def test_local_teacher_uses_forward_lateral_corner_when_blocked(self):
+        starts = torch.tensor([[0.0, 5.0]])
+        goals = torch.tensor([[5.0, 5.0]])
+        centers = torch.tensor([[2.0, 5.0]])
+        extents = torch.tensor([[0.25, 0.25]])
+        waypoint, direct, _, label = choose_local_waypoint(starts, goals, centers, extents)
+        self.assertFalse(direct.item())
+        self.assertEqual(label.item(), 1)
+        self.assertGreater(waypoint[0, 0].item(), 0.0)
+        self.assertGreater(abs(waypoint[0, 1].item() - 5.0), 0.25)
+        clear, _ = segment_clearance(starts, waypoint, centers, extents)
+        self.assertTrue(clear.item())
     def test_seeded_eval_sampling_is_deterministic_and_bounded(self):
         seeds = torch.tensor([1000, 1001, 2000])
         first = deterministic_uniform_from_seed(seeds, 7, 0.75, 1.10)
@@ -310,6 +333,59 @@ class TestMinimalStairs(unittest.TestCase):
         output = policy.act_inference(torch.randn(4, 350))
         self.assertTrue(torch.equal(output, policy.u_bar))
         self.assertTrue(torch.equal(policy.u_s, policy.u_bar))
+
+    def test_passability_head_is_shared_with_navigation_features(self):
+        policy = DifferentiableSafeActorCritic(
+            num_actions=3,
+            num_props=12,
+            num_rays=21,
+            num_goal_obs=2,
+            num_dynamic_obs=0,
+            his_len=10,
+            ray_fov_deg=100.0,
+            enable_shield=False,
+            num_passability_classes=4,
+        )
+        output = policy.act_inference(torch.randn(5, 350))
+        self.assertEqual(tuple(output.shape), (5, 3))
+        self.assertEqual(tuple(policy.passability_logits.shape), (5, 4))
+
+    def test_ppo_updates_passability_auxiliary_loss(self):
+        policy = DifferentiableSafeActorCritic(
+            num_actions=3,
+            num_props=12,
+            num_rays=21,
+            num_goal_obs=2,
+            num_dynamic_obs=0,
+            his_len=10,
+            enable_shield=False,
+            num_passability_classes=4,
+        )
+        algorithm = PPO(
+            policy,
+            num_learning_epochs=1,
+            num_mini_batches=1,
+            enable_action_range_regularization=False,
+            enable_smoothness_regularization=False,
+            passability_loss_coef=0.25,
+        )
+        algorithm.init_storage(4, 4, [350], [3])
+        obs = torch.randn(4, 350)
+        labels = torch.tensor([0, 1, 2, 3])
+        for _ in range(4):
+            actions = algorithm.act(obs, obs, passability_targets=labels)
+            next_obs = torch.randn(4, 350)
+            algorithm.process_env_step(
+                next_obs,
+                torch.randn(4),
+                torch.zeros(4, dtype=torch.bool),
+                {},
+            )
+            obs = next_obs
+        algorithm.compute_returns(obs)
+        algorithm.update()
+        self.assertTrue(np.isfinite(algorithm.last_passability_loss))
+        self.assertGreater(algorithm.last_passability_loss, 0.0)
 
     def test_goal_timer_is_consecutive(self):
         timer = torch.tensor([5, 5])

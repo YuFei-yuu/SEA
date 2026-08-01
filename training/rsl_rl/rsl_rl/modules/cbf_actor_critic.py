@@ -24,6 +24,7 @@ class DifferentiableSafeActorCritic(nn.Module):
                     dynamic_cbf_damping_factor=1.0,
                     ray_fov_deg=180.0,
                     enable_shield=True,
+                    num_passability_classes=0,
                  **kwargs):
         super().__init__()
 
@@ -39,6 +40,7 @@ class DifferentiableSafeActorCritic(nn.Module):
         self.num_actions = num_actions
         self.num_latent = 16
         self.enable_shield = bool(enable_shield)
+        self.num_passability_classes = int(num_passability_classes)
 
         mlp_input_dim_a = self.num_obs_one_step + self.num_latent
         mlp_input_dim_c = self.num_obs_one_step + self.num_latent
@@ -95,6 +97,16 @@ class DifferentiableSafeActorCritic(nn.Module):
             activation,
             nn.Linear(64, 1)
         )
+        self.passability_head = None
+        if self.num_passability_classes > 0:
+            self.passability_head = nn.Sequential(
+                nn.Linear(actor_hidden_dims[-1], 64),
+                type(activation)(),
+                nn.Linear(64, self.num_passability_classes),
+            )
+        self.passability_logits = None
+        self.passability_probs = None
+        self.u_safe = None
 
         # 4. Closed-form CBF Layer
         self.cbf_layer = ExactLSECBFLayer(num_rays=num_rays, fov_deg=ray_fov_deg)
@@ -153,6 +165,11 @@ class DifferentiableSafeActorCritic(nn.Module):
         
         # 1. Extract shared deep features
         shared_features = self.backbone(obs_cat)
+        self.passability_logits = (
+            self.passability_head(shared_features)
+            if self.passability_head is not None
+            else None
+        )
         
         # 2. Dual-head parallel inference
         u_bar = self.nav_head(shared_features)
@@ -165,17 +182,40 @@ class DifferentiableSafeActorCritic(nn.Module):
         
         # 4. First shield static/ray obstacles, then apply velocity-aware dynamic CBF.
         if self.enable_shield:
-            u_static_safe = self.cbf_layer(u_bar, rays_real, alpha)
+            u_static_candidate = self.cbf_layer(u_bar, rays_real, alpha)
+            # The static ray shield must not treat a traversable stair riser
+            # as a wall.  The passability head is trained on the same shared
+            # features and gates only the correction, while low-obstacle
+            # bypass and blocked states remain protected.
+            if self.passability_logits is not None:
+                self.passability_probs = torch.softmax(self.passability_logits, dim=-1)
+                stair_gate = self.passability_probs[:, 2:3].clamp(0.0, 1.0)
+                u_static_safe = u_bar + (1.0 - stair_gate) * (
+                    u_static_candidate - u_bar
+                )
+            else:
+                u_static_safe = u_static_candidate
             base_vel = props[:, 6:8] if props.shape[-1] >= 8 else None
             u_s = self.dynamic_cbf_layer(u_static_safe, dyn, base_vel, alpha)
+            if self.passability_probs is not None:
+                # A blocked classifier state requests local replanning by
+                # slowing the command instead of freezing lateral motion.
+                blocked_scale = 1.0 - 0.60 * self.passability_probs[:, 3:4]
+                u_s = torch.cat((u_s[:, :2] * blocked_scale, u_s[:, 2:3]), dim=-1)
         else:
             u_static_safe = u_bar
             u_s = u_bar
+            self.passability_probs = (
+                torch.softmax(self.passability_logits, dim=-1)
+                if self.passability_logits is not None
+                else None
+            )
         
         # Save u_bar and u_s for calculating Intervention Loss
         self.u_bar = u_bar
         self.u_static_safe = u_static_safe
         self.u_s = u_s
+        self.u_safe = u_s
         self.diagnostics = self._compute_action_diagnostics(
             goals, u_bar, u_static_safe, u_s
         )

@@ -19,12 +19,15 @@ class DepthRayDataset(Dataset):
         if not files:
             raise FileNotFoundError(f"No depth_rays_*.npz files found in {data_dir}.")
         depth_batches, ray_batches = [], []
+        group_batches = []
         for path in files:
             data = np.load(path)
             depth_batches.append(data["depth"])
             ray_batches.append(data["rays"])
+            group_batches.append(data["group"] if "group" in data else np.arange(len(data["depth"])))
         self.depth = np.concatenate(depth_batches, axis=0)
         self.rays = np.concatenate(ray_batches, axis=0)
+        self.groups = np.concatenate(group_batches, axis=0)
         if self.depth.shape[0] != self.rays.shape[0]:
             raise ValueError("Depth and ray sample counts do not match.")
         if self.rays.ndim != 2:
@@ -72,6 +75,10 @@ def main():
     parser.add_argument("--depth_max", type=float, default=5.00)
     parser.add_argument("--ray_min", type=float, default=0.10)
     parser.add_argument("--ray_max", type=float, default=5.00)
+    parser.add_argument("--near_distance", type=float, default=1.50)
+    parser.add_argument("--near_loss_weight", type=float, default=3.0)
+    parser.add_argument("--near_miss_weight", type=float, default=4.0)
+    parser.add_argument("--horizontal_flip_prob", type=float, default=0.5)
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -84,9 +91,25 @@ def main():
     if train_size < 1:
         raise ValueError("Dataset is too small for an 80/10/10 split.")
     generator = torch.Generator().manual_seed(args.seed)
-    train_set, val_set, test_set = random_split(
-        dataset, [train_size, val_size, test_size], generator=generator
-    )
+    # Prefer group-disjoint splits when collection recorded episode seeds.
+    unique_groups = np.unique(dataset.groups)
+    if unique_groups.size >= 10:
+        rng = np.random.default_rng(args.seed)
+        rng.shuffle(unique_groups)
+        n_test = max(1, int(round(0.10 * unique_groups.size)))
+        n_val = max(1, int(round(0.10 * unique_groups.size)))
+        test_groups = set(unique_groups[:n_test].tolist())
+        val_groups = set(unique_groups[n_test : n_test + n_val].tolist())
+        train_idx = [i for i, g in enumerate(dataset.groups) if g not in test_groups | val_groups]
+        val_idx = [i for i, g in enumerate(dataset.groups) if g in val_groups]
+        test_idx = [i for i, g in enumerate(dataset.groups) if g in test_groups]
+        train_set = torch.utils.data.Subset(dataset, train_idx)
+        val_set = torch.utils.data.Subset(dataset, val_idx)
+        test_set = torch.utils.data.Subset(dataset, test_idx)
+    else:
+        train_set, val_set, test_set = random_split(
+            dataset, [train_size, val_size, test_size], generator=generator
+        )
     train_loader = DataLoader(
         train_set, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers
     )
@@ -109,8 +132,21 @@ def main():
         for depth, rays in train_loader:
             depth = depth.to(device).clamp(min=args.depth_min, max=args.depth_max)
             rays = rays.to(device).clamp(min=args.ray_min, max=args.ray_max)
+            if args.horizontal_flip_prob > 0.0:
+                flip = torch.rand(depth.shape[0], device=device) < args.horizontal_flip_prob
+                depth[flip] = torch.flip(depth[flip], dims=(-1,))
+                rays[flip] = torch.flip(rays[flip], dims=(-1,))
             prediction_log = model(torch.log2(depth).unsqueeze(1))
-            loss = torch.mean((prediction_log - torch.log2(rays)) ** 2)
+            target_log = torch.log2(rays)
+            log_error = prediction_log - target_log
+            near = rays <= args.near_distance
+            miss = near & (log_error > 0.0)
+            weights = (
+                1.0
+                + args.near_loss_weight * near.float()
+                + args.near_miss_weight * miss.float()
+            )
+            loss = torch.mean(weights * log_error.square())
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -131,6 +167,10 @@ def main():
                     "depth_max": args.depth_max,
                     "ray_min": args.ray_min,
                     "ray_max": args.ray_max,
+                    "near_distance": args.near_distance,
+                    "near_loss_weight": args.near_loss_weight,
+                    "near_miss_weight": args.near_miss_weight,
+                    "horizontal_flip_prob": args.horizontal_flip_prob,
                     "val_ray_mae": best_val_mae,
                 },
                 args.output,
